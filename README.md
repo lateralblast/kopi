@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.7.5
+Version: 0.7.7
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -15,6 +15,7 @@ Version: 0.7.5
 - [Files to board](#files-to-board): [`--import`](#importing-changelogmd-todomd-issues-and-prs), [`--update`](#updating-the-project-from-changelogmd-todomd-issues-and-prs), [`--diff`](#comparing-the-project-with-the-files---diff), [`--sync`](#syncing-both-ways---sync), [extra sources](#extra-sources---code-comments---releases), [single files](#importing-or-updating-a-single-file)
 - [Board to files](#board-to-files): [`--export`](#exporting-board-items-to-todomd---export), [`--squash`](#ticking-todomd-from-the-board---squash), [issues and PRs](#issues-and-prs)
 - [Working on items](#working-on-items): [`--list`](#listing-items---list), [`--done` / `--start` / `--move`](#moving-items---done---start---move), [`--promote`](#promoting-drafts-to-issues---promote---promote-all), [`--open`](#opening-an-issue---open), [`--close`](#closing-an-issue---close), [`--reopen`](#reopening-an-issue---reopen), [`--archive`](#archiving-stale-items---archive), [`--restore`](#restoring-archived-items---restore), [`--dedupe`](#removing-duplicates---dedupe)
+- [Roadmap dates](#roadmap-dates): [`--setup-dates`, `--backfill-dates`](#roadmap-dates)
 - [Reports](#reports): [`--report`](#progress-report---report), [`--rollup`](#roll-up-across-projects---rollup)
 
 ## Quick start
@@ -75,6 +76,8 @@ cd ~/code/my-repo
 ./kopi.py --dedupe [PATH] [--dry-run]                        # delete duplicate board items
 
 # Reports
+./kopi.py --setup-dates [--dry-run]                          # create the Started / Completed date fields (for the Roadmap view)
+./kopi.py --backfill-dates [--dry-run]                       # fill the missing Started / Completed dates on existing items
 ./kopi.py --report [text|markdown]                           # progress summary of the project
 ./kopi.py --rollup [DIR ...]                                 # status counts across several repos' projects (or all open projects)
 
@@ -117,6 +120,10 @@ Done = "Shipped"
 code_comments = true
 releases = true
 
+[dates]                       # names of the Roadmap date fields (these are the defaults)
+started = "Started"
+completed = "Completed"
+
 [comments]                    # tuning of the code-comment scan
 tags = ["TODO", "FIXME", "HACK"]
 include = ["src/*"]           # only these paths (globs on the path or file name)
@@ -156,6 +163,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--list`: an array of items, as under [`--list`](#listing-items---list).
 - `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--open`: `{project, repo, dry_run, created: {title, url, number, item_id} | null}` (with `--local`: `{file, dry_run, created: {title, labels}}`); `--close`: `{repo, dry_run, closed: [{number, title, url}]}` (with `--local`: `{file, dry_run, closed: [{title, number?, url?}]}`); `--reopen`: `{repo, dry_run, reopened: [{number, title, url}], board: {project?, action}}` (`action` is `moved`, `added`, `unchanged` or `skipped`); `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}], annotated?}`; `--promote-all`: the same plus `failed: [{title, id, error}]`; `annotated` (with `--annotate`) is `[{title, number, entry}]`.
 - `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--dedupe`: `{project, dry_run, deleted}`.
+- `--import`, `--update`, `--done`, `--start` and `--move` also report `dates: [{title, field, date}]` when they set any. `--setup-dates`: `{project, dry_run, created: [{field}], existing: [{field, type}]}`; `--backfill-dates`: `{project, dry_run, set: [{title, field, date}]}`.
 - `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
 
 ### Limits
@@ -338,7 +346,7 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 `kopi --close ISSUE` closes one issue in the current repo (found from the git `origin`) on GitHub. `ISSUE` is an issue number (`12` or `#12`), an issue URL, or text that matches exactly one **open** issue's title, ignoring case: `kopi --close "dark mode"`. If several open issues match, an exact title match wins; otherwise it fails and lists the candidates with their numbers. Use `--dry-run` to see what would be closed.
 
 - An issue that is already closed is reported and left alone. Closed issues are not matched by title text, only by number or URL.
-- Only the issue changes. The project board catches up on the next `--update`, which moves a closed issue's item to Done; or move it now with `--done`.
+- Only the issue changes. The project board catches up on the next `--update`, which moves a closed issue's item to Done; or move it now with `--done`. If your project has GitHub's built-in "item closed" workflow enabled, the item moves to Done by itself straight away.
 - Run it from the repo's directory; it takes no path argument because its value is the issue.
 - **`--local`.** `kopi --close ISSUE --local` only moves the matching entry in `ISSUES.md` to `## Done` (matched by number, link or title text among the entries not already Done). GitHub and the board are not touched and no login is needed. An entry that came from the board is rebuilt from the board by the next `--export issues` or `--squash`, so a local close of a linked issue lasts only until then; an entry with no link (see `--open --local`) is kept, and `kopi --import issues` will create it and close it.
 
@@ -380,6 +388,30 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 ### Removing duplicates (`--dedupe`)
 
 `kopi --dedupe` deletes duplicate items from the board: drafts with the same title (ignoring case and spacing) and linked issues/PRs with the same URL. In each group it keeps the copy furthest along (Done over In Progress over Todo, the first listed on a tie) and **deletes** the rest, which cannot be undone, so run with `--dry-run` first. It looks only at the board, not the files. Duplicates usually come from running `--update` twice before GitHub's item listing catches up.
+
+## Roadmap dates
+
+A GitHub project can show its items on a **Roadmap** view, plotted by date fields. kopi can fill two date fields, **Started** and **Completed**, so the Roadmap shows your history (every changelog release) as well as what is in flight.
+
+1. **Create the fields once:** `kopi --setup-dates` (add `--dry-run` to preview). It creates DATE fields named Started and Completed if they are missing; use `[dates]` in `.kopi.toml` for other names.
+2. **Create the Roadmap view once**, in the web UI: add a view, set its layout to Roadmap, and choose Started and Completed as the date fields. GitHub's API cannot create or configure views, so this step is manual.
+3. **Fill the dates:** `kopi --backfill-dates` sets any that are missing on the existing items (`--dry-run` first). From then on `--import`, `--update`, `--start`, `--done` and `--move` keep them up to date by themselves. A board without the fields is simply left alone.
+
+Where each date comes from:
+
+| Item | Started | Completed |
+| --- | --- | --- |
+| Changelog entry (`[0.6.2] ...`) | The previous release's date (the same day for the oldest) | The date in its `## [0.6.2] - 2026-10-10` heading |
+| Done `TODO.md` draft | The previous changelog release before it was completed | The date of the commit that ticked its `- [x]` entry (blank if it was never committed) |
+| Linked issue or PR | Its created date | Its closed (issue) or merged (PR) date, once Done |
+| `[release]` tag | The previous changelog release | The tag's commit date |
+| `--start ITEM` | Today | |
+| `--done ITEM` (or `--move ITEM Done`) | If empty, the previous changelog release's date | Today |
+
+- **Started defaults to the previous release.** With nothing better known, work is taken to have started when the previous changelog release shipped, so a release's Roadmap bar spans from the one before it. Releases on the same day give a one-day marker.
+- **Nothing is overwritten.** A date already on an item, including one you typed in, is kept; only empty fields are filled.
+- Open items get no Completed date, and In Progress items get Started only from `--start`.
+- Writes go in batches (20 per request). `--dry-run` on `--setup-dates` and `--backfill-dates` lists what would happen; `--import` and `--update` in dry-run mode do not mention dates.
 
 ## Reports
 

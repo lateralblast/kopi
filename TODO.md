@@ -4,10 +4,11 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Open
 
-- [ ] Verify `--open`, `--reopen`, `--close` and `--promote-all --yes` live on a throwaway issue (they are only tested with mocks so far).
 
 ## Done
 
+- [x] Roadmap dates: Started / Completed fields set from CHANGELOG.md headings, TODO.md tick commits, issue/PR and tag dates; `--setup-dates`, `--backfill-dates`, stamping on `--start` / `--done`; with tests, verified live.
+- [x] Verified `--open`, `--reopen`, `--close`, `--promote --annotate` and `--promote-all --yes` live on throwaway issues; fixed an `--annotate` matching bug found doing it, and added a rate-limit hint.
 - [x] Split `tests/test_cli.py` into one file per feature (shared helpers in `tests/helpers.py`) and tighten the weak assertions.
 - [x] `--annotate` adds the new issue number to the `TODO.md` entry after `--promote` / `--promote-all`, with tests.
 - [x] `--local` for `--open`, `--reopen` and `--close` (ISSUES.md only), with tests; exports keep unlinked local entries.

@@ -7,6 +7,25 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-10-11
+
+### Added
+- Roadmap dates. kopi can now fill two date fields on the project, **Started** and **Completed** (names configurable under `[dates]` in `.kopi.toml`), so the board's Roadmap view shows history:
+  - `--import` and `--update` set them on the items they add, and `--update` sets Completed on items it moves to Done. A changelog item gets the date in its `## [version] - date` heading as Completed, and the date of the previous changelog release as Started (the same day for the oldest release). A Done `TODO.md` draft gets Completed from the commit that ticked its `- [x]` entry. A linked issue or PR gets its created date as Started and its closed or merged date as Completed. A `[release]` item gets its tag's commit date.
+  - `--start` stamps Started with today's date, and `--done` (or `--move ... Done`) stamps Completed with today's date and, if Started is empty, the previous changelog release's date.
+  - A value already on an item is never overwritten, and a board without the fields is left alone.
+  - `--setup-dates` creates the two date fields if missing, and `--backfill-dates` fills the gaps on existing items (both with `--dry-run` and `--json`).
+  - `--import` / `--update` / `--done` / `--start` / `--move` `--json` output gains `dates: [{title, field, date}]` when any were set. Documented in `README.md`.
+- Verified live on a temporary project (deleted afterwards): the fields were created, an import set dates from the changelog, a ticked `TODO.md` commit and an issue's created date, and `--start` / `--done` stamped as described.
+
+## [0.7.6] - 2026-10-11
+
+### Added
+- When `gh` reports that GitHub's API rate limit was exceeded, the error now says how to see when it resets (`gh api graphql -f query='{ rateLimit { remaining resetAt } }'`, since `gh api rate_limit` can show stale numbers) and to retry after that time.
+
+### Changed
+- Verified live on the `kopi` project and a temporary project (both cleaned up afterwards): `--open` (created issue #3 and added it as Todo; a repeat with the same title was refused), `--close` and `--reopen` (including the already-closed and already-open cases and moving a Done item back to Todo), `--promote --annotate` and `--promote-all --yes` (two drafts became issues #6 and #7 a second apart and kept their statuses; a changelog draft and a Done draft were left alone). On this board GitHub's built-in "item closed" workflow moves a closed issue's item to Done straight away, so `--close` does not need `--update` here. The check found and fixed a bug in `--annotate` matching, now covered by a test: a short title could claim a long `TODO.md` entry that merely contained its words, ahead of the exact entry.
+
 ## [0.7.5] - 2026-10-11
 
 ### Changed

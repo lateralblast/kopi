@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.7.5"
+__version__ = "0.7.7"
 
 
 class GhError(RuntimeError):
@@ -37,6 +37,10 @@ def run(*args):
         msg = proc.stderr.strip() or proc.stdout.strip()
         if "scope" in msg:
             msg += "\nHint: run `gh auth refresh -s project`"
+        if "rate limit" in msg.lower():
+            msg += ("\nHint: GitHub's API limit was reached. See when it resets with "
+                    "`gh api graphql -f query='{ rateLimit { remaining resetAt } }'` (`gh api rate_limit` can show stale "
+                    "numbers), then retry after that time")
         raise GhError(msg)
     return proc.stdout
 
@@ -160,9 +164,10 @@ def board_items(args, number):
 
 
 CONFIG_FILE = ".kopi.toml"
-CONFIG_KEYS = {"owner": str, "project": str, "status": dict, "sources": dict, "comments": dict, "repos": list}
+CONFIG_KEYS = {"owner": str, "project": str, "status": dict, "sources": dict, "comments": dict, "repos": list, "dates": dict}
 SOURCES_KEYS = {"code_comments": bool, "releases": bool}
 COMMENTS_KEYS = {"tags": list, "include": list, "exclude": list}
+DATES_KEYS = {"started": str, "completed": str}
 
 
 def _toml_value(raw):
@@ -250,7 +255,7 @@ def load_config(path, required=False):
             print(f"warning: {path}: unknown setting {key!r} ignored", file=sys.stderr)
         elif not isinstance(value, CONFIG_KEYS[key]):
             raise GhError(f"{path}: {key} must be a {CONFIG_KEYS[key].__name__}")
-    for table, known in (("sources", SOURCES_KEYS), ("comments", COMMENTS_KEYS)):
+    for table, known in (("sources", SOURCES_KEYS), ("comments", COMMENTS_KEYS), ("dates", DATES_KEYS)):
         for key, value in (cfg.get(table) or {}).items():
             if key not in known:
                 print(f"warning: {path}: unknown setting {table}.{key} ignored", file=sys.stderr)
@@ -647,6 +652,216 @@ def wait_for_items(args, number, ids):
         waited += SETTLE_INTERVAL
 
 
+# --- Started / Completed dates, for the project's Roadmap view ---------------------------------------------------
+DATE_KEYS = ("started", "completed")
+DEFAULT_DATE_FIELDS = {"started": "Started", "completed": "Completed"}
+DATE_BATCH = 20  # field updates per GraphQL request
+
+
+def date_field_names(args):
+    """{"started": name, "completed": name}: the board's date field names (`[dates]` in .kopi.toml, else the defaults)."""
+    cfg = (getattr(args, "config_data", None) or {}).get("dates") or {}
+    return {k: cfg.get(k) or DEFAULT_DATE_FIELDS[k] for k in DATE_KEYS}
+
+
+def changelog_release_dates(text):
+    """{version: "YYYY-MM-DD"} for the `## [version] - date` headings that carry a date."""
+    return {m.group(1): m.group(2) for m in re.finditer(r"^## \[([^\]]+)\]\s*-\s*(\d{4}-\d{2}-\d{2})", text, re.M)}
+
+
+def default_started(release_dates, completed):
+    """The date of the newest release strictly before `completed`, else `completed` itself: with nothing better
+    known, work is taken to have started when the previous changelog release shipped."""
+    earlier = [d for d in release_dates if d < completed]
+    return max(earlier) if earlier else completed
+
+
+def _git_first_line(*argv):
+    try:
+        proc = subprocess.run(["git", *argv], capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    return (proc.stdout.split("\n", 1)[0].strip() or None) if proc.returncode == 0 else None
+
+
+def tag_date(tag):
+    """Commit date (YYYY-MM-DD) of a local git tag, or None."""
+    return _git_first_line("log", "-1", "--format=%cs", tag)
+
+
+def tick_date(text):
+    """Date (YYYY-MM-DD) of the first commit that put `- [x] text` into TODO.md, or None if no commit did."""
+    return _git_first_line("log", "--reverse", "--format=%cs", "-S- [x] " + text, "--", "TODO.md")
+
+
+def linked_dates(slug):
+    """{url: (created, finished)} (YYYY-MM-DD) for the repo's issues and PRs; `finished` is closedAt / mergedAt."""
+    out = {}
+    for kind, done_key in (("issue", "closedAt"), ("pr", "mergedAt")):
+        try:
+            rows = json.loads(run(kind, "list", "--repo", slug, "--state", "all", "--limit", str(LINKED_LIMIT),
+                                  "--json", f"url,createdAt,{done_key}") or "[]")
+        except GhError as e:
+            print(f"warning: could not list {kind} dates for {slug}: {e}", file=sys.stderr)
+            continue
+        for r in rows:
+            out[r["url"]] = ((r.get("createdAt") or "")[:10] or None, (r.get(done_key) or "")[:10] or None)
+    return out
+
+
+def resolve_dates(ctx, item):
+    """(started, completed) dates for a board item (`ctx` has `.releases` {version: date} and `.linked` {url: dates}).
+
+    Completed (Done items only) comes from the item's own record: a changelog entry's release date, an issue's
+    closedAt or PR's mergedAt, a `[release]` tag's commit date, or, for a `TODO.md` draft, the commit that ticked
+    it. Started is an issue/PR's createdAt, else the previous changelog release's date (see default_started).
+    Either may be None when nothing is known."""
+    title, status = item["title"], item.get("status")
+    content = item.get("content") or {}
+    url = _item_url(item)
+    started = completed = None
+    m = CHANGELOG_TITLE.match(title)
+    if url and url in ctx.linked:
+        started, finished = ctx.linked[url]
+        completed = finished
+    elif m and m.group(1) in ctx.releases:
+        completed = ctx.releases[m.group(1)]
+    elif title.startswith(RELEASE_PREFIX):
+        completed = tag_date(title[len(RELEASE_PREFIX):])
+    elif status == "Done":
+        text = (content.get("body") or "").strip() or title
+        completed = tick_date(text[:-1] if text.endswith("…") else text)
+    if status != "Done":
+        completed = None
+    if completed and not started:
+        started = default_started(ctx.releases.values(), completed)
+    return started, completed
+
+
+class DateWriter:
+    """Queue Started / Completed values for board items and write them in batched GraphQL requests.
+
+    Only fields that exist on the board as DATE fields (named by date_field_names) are used, so a board without
+    them is left alone (falsy writer), and a value is only written where the item has none."""
+
+    def __init__(self, args, number):
+        self.args, self.number, self.queue = args, number, []
+        self.names = date_field_names(args)
+        self.project_id = run_json("project", "view", str(number), *_owner(args))["id"]
+        nodes = (graphql(FIELDS_QUERY, id=self.project_id).get("data", {}).get("node") or {}).get("fields", {}).get("nodes", [])
+        self.fields = {}
+        for key, name in self.names.items():
+            field = next((f for f in nodes if (f.get("name") or "").lower() == name.lower()), None)
+            if field and field.get("dataType") == "DATE":
+                self.fields[key] = field
+            elif field:
+                print(f"warning: field {field['name']!r} is {field.get('dataType')}, not a date field; skipped", file=sys.stderr)
+
+    def __bool__(self):
+        return bool(self.fields)
+
+    def want(self, item, started=None, completed=None):
+        """Queue the dates for `item` (a board item dict, whose own values are honoured: nothing is overwritten)."""
+        for key, date in (("started", started), ("completed", completed)):
+            field = self.fields.get(key)
+            if not (date and field) or item.get(self.names[key].lower()):
+                continue
+            datetime.date.fromisoformat(date)
+            self.queue.append({"id": item["id"], "title": item["title"], "field": field["name"],
+                               "field_id": field["id"], "date": date})
+
+    def flush(self, dry_run=False):
+        """Write the queue (unless dry_run); returns [{title, field, date}] for what was (or would be) set."""
+        done = [{"title": q["title"], "field": q["field"], "date": q["date"]} for q in self.queue]
+        for i in range(0, len(self.queue) * (not dry_run), DATE_BATCH):
+            parts = [f'a{n}: updateProjectV2ItemFieldValue(input: {{projectId: "{self.project_id}", itemId: "{q["id"]}", '
+                     f'fieldId: "{q["field_id"]}", value: {{date: "{q["date"]}"}}}}) {{ projectV2Item {{ id }} }}'
+                     for n, q in enumerate(self.queue[i:i + DATE_BATCH])]
+            result = graphql("mutation { " + " ".join(parts) + " }")
+            if result.get("errors"):
+                raise GhError("; ".join(e.get("message", "?") for e in result["errors"]))
+        self.queue = []
+        return done
+
+
+def write_dates(args, number, items, changelog):
+    """Set the Started / Completed dates of `items` (board-item dicts) from what is known about each; returns what was set.
+
+    GitHub dates are fetched when some items are issues/PRs. A board without the date fields: no-op."""
+    writer = DateWriter(args, number)
+    if not writer:
+        return []
+    repo = git_repo() if any(_item_url(i) for i in items) else None
+    ctx = SimpleNamespace(releases=changelog_release_dates(changelog), linked=linked_dates("/".join(repo)) if repo else {})
+    for item in items:
+        writer.want(item, *resolve_dates(ctx, item))
+    return writer.flush()
+
+
+def stamp_dates(args, number, item, target):
+    """After `--start` / `--done` / `--move`: Started today for In Progress; Completed today for Done, with Started
+    defaulting to the previous changelog release's date if the item has none. Returns what was set."""
+    writer = DateWriter(args, number)
+    if not writer or target not in ("In Progress", "Done"):
+        return []
+    today = datetime.date.today().isoformat()
+    if target == "In Progress":
+        writer.want(item, started=today)
+    else:
+        writer.want(item, started=default_started(changelog_release_dates(_read("CHANGELOG.md")).values(), today), completed=today)
+    return writer.flush()
+
+
+def cmd_setup_dates(args):
+    """--setup-dates: create the Started and Completed date fields on the project if they are missing."""
+    project, _ = find_project(args)
+    if not project:
+        raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
+    number = project["number"]
+    names = date_field_names(args)
+    project_id = run_json("project", "view", str(number), *_owner(args))["id"]
+    nodes = (graphql(FIELDS_QUERY, id=project_id).get("data", {}).get("node") or {}).get("fields", {}).get("nodes", [])
+    have = {(f.get("name") or "").lower(): f for f in nodes}
+    report = {"project": number, "dry_run": bool(args.dry_run), "created": [], "existing": []}
+    for name in names.values():
+        field = have.get(name.lower())
+        if field:
+            report["existing"].append({"field": field["name"], "type": field.get("dataType")})
+            say(args, f"exists\t{field['name']}\t{field.get('dataType')}")
+        elif args.dry_run:
+            report["created"].append({"field": name})
+            say(args, f"create\t{name}\tDATE")
+        else:
+            run("project", "field-create", str(number), *_owner(args), "--name", name, "--data-type", "DATE")
+            report["created"].append({"field": name})
+            say(args, f"Created date field {name}")
+    emit(args, report)
+
+
+def cmd_backfill_dates(args):
+    """--backfill-dates: set the missing Started / Completed dates on the project's items from what is known about
+    each (see resolve_dates). Values already set are never changed. --dry-run lists them without writing."""
+    project, _ = find_project(args)
+    if not project:
+        raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
+    number = project["number"]
+    writer = DateWriter(args, number)
+    if not writer:
+        raise GhError("the project has no Started / Completed date fields; run --setup-dates first")
+    items = board_items(args, number)
+    repo = git_repo() if any(_item_url(i) for i in items) else None
+    ctx = SimpleNamespace(releases=changelog_release_dates(_read("CHANGELOG.md")),
+                          linked=linked_dates("/".join(repo)) if repo else {})
+    for item in items:
+        writer.want(item, *resolve_dates(ctx, item))
+    done = writer.flush(dry_run=bool(args.dry_run))
+    for d in done:
+        say(args, f"{'set' if args.dry_run else 'Set'}\t{d['field']}\t{d['date']}\t{d['title']}")
+    say(args, ("Dry run: " if args.dry_run else "") + f"{len(done)} dates {'would be ' if args.dry_run else ''}set on "
+        f"{len({d['title'] for d in done})} items in project #{number}")
+    emit(args, {"project": number, "dry_run": bool(args.dry_run), "set": done})
+
+
 def cmd_import(args):
     """Seed an empty project from CHANGELOG.md and TODO.md (draft items) plus the repo's issues and PRs."""
     changelog, todo, linked = load_sources(args)
@@ -685,8 +900,11 @@ def cmd_import(args):
         created.append(run_json("project", "item-add", str(number), *_owner(args), "--url", url)["id"])
         set_status(created[-1], status)
     wait_for_items(args, number, created)
-    say(args, f"Imported {total} items into project #{number}")
-    emit(args, {"project": number, "dry_run": False, "imported": total})
+    made = [{"id": i, "title": t, "status": st, "content": {"body": b}} for i, (st, t, b) in zip(created, plan)]
+    made += [{"id": i, "title": t, "status": st, "content": {"url": u}} for i, (st, t, u) in zip(created[len(plan):], linked)]
+    dates = write_dates(args, number, made, changelog)
+    say(args, f"Imported {total} items into project #{number}" + (f" ({len(dates)} dates set)" if dates else ""))
+    emit(args, {"project": number, "dry_run": False, "imported": total, **({"dates": dates} if dates else {})})
 
 
 RANK = {"Todo": 0, "In Progress": 1, "Done": 2}
@@ -792,7 +1010,8 @@ def sync_plan(args):
     off = tuple(p for p, on in ((CODE_PREFIX, args.code_comments), (RELEASE_PREFIX, args.releases)) if not on)
     orphans = [i for i in existing if i["id"] not in matched_ids and i["id"] not in linked_ids
                and not i["title"].startswith(off)]
-    return SimpleNamespace(number=number, adds=adds, link_adds=link_adds, moves=moves, ahead=ahead, orphans=orphans, items=existing, ticks=ticks)
+    return SimpleNamespace(number=number, adds=adds, link_adds=link_adds, moves=moves, ahead=ahead, orphans=orphans, items=existing, ticks=ticks,
+                           changelog=changelog)
 
 
 def cmd_update(args):
@@ -835,8 +1054,13 @@ def cmd_update(args):
     for item, _, new, _ in moves:
         set_status(item["id"], new)
     wait_for_items(args, number, created)
-    say(args, f"Updated project #{number}: {len(adds) + len(link_adds)} added, {len(moves)} moved")
-    emit(args, report)
+    made = [{"id": i, "title": t, "status": st, "content": {"body": b}} for i, (st, t, b) in zip(created, adds)]
+    made += [{"id": i, "title": t, "status": st, "content": {"url": u}} for i, (st, t, u) in zip(created[len(adds):], link_adds)]
+    made += [{**item, "status": new} for item, _, new, _ in moves if new == "Done"]
+    dates = write_dates(args, number, made, p.changelog)
+    say(args, f"Updated project #{number}: {len(adds) + len(link_adds)} added, {len(moves)} moved"
+        + (f", {len(dates)} dates set" if dates else ""))
+    emit(args, {**report, **({"dates": dates} if dates else {})})
 
 
 def diff_summary(p):
@@ -1393,6 +1617,11 @@ def _move_item(args, text, target, flag):
         _status_setter(args, number, [target])(item["id"], target)
         report["moved"].append({"title": item["title"], "from": old, "to": target})
         say(args, f"Moved to {target}: {item['title']} (was {old})")
+        dates = stamp_dates(args, number, item, target)
+        for d in dates:
+            say(args, f"Set {d['field']} {d['date']}")
+        if dates:
+            report["dates"] = dates
     emit(args, report)
 
 
@@ -2290,6 +2519,10 @@ def build_parser():
     p.add_argument("--reopen", metavar="ISSUE",
                    help="reopen a closed issue in the current repo and put it back on the project as Todo: ISSUE is a "
                         "number, an issue URL, or text matching exactly one closed issue's title")
+    p.add_argument("--setup-dates", action="store_true",
+                   help="create the Started and Completed date fields on the project if missing (for its Roadmap view)")
+    p.add_argument("--backfill-dates", action="store_true",
+                   help="set the missing Started / Completed dates on the project's items (never overwrites)")
     p.add_argument("--close", metavar="ISSUE",
                    help="close one issue in the current repo: ISSUE is a number, an issue URL, or text matching "
                         "exactly one open issue's title")
@@ -2360,11 +2593,12 @@ def main(argv=None):
         args.do_import = "."
     modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done, args.list, args.export,
              args.sync, args.start, args.move, args.close, args.report,
-             args.rollup is not None, args.promote, args.promote_all, args.open, args.reopen]
+             args.rollup is not None, args.promote, args.promote_all, args.open, args.reopen, args.setup_dates,
+             args.backfill_dates]
     if not (any(modes) or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close / --report / --rollup / --promote / --promote-all / --open / --reopen)")
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close / --report / --rollup / --promote / --promote-all / --open / --reopen / --setup-dates / --backfill-dates)")
     if sum(map(bool, modes)) > 1:
-        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move, --close, --report, --rollup, --promote, --promote-all, --open and --reopen are mutually exclusive")
+        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move, --close, --report, --rollup, --promote, --promote-all, --open, --reopen, --setup-dates and --backfill-dates are mutually exclusive")
     if (args.body is not None or args.label) and not args.open:
         parser.error("--body and --label only apply to --open")
     if args.annotate and not (args.promote or args.promote_all):
@@ -2418,7 +2652,8 @@ def main(argv=None):
                                           (args.dedupe, cmd_dedupe), (args.squash, cmd_squash), (args.restore, cmd_restore), (args.done, cmd_done), (args.list, cmd_list_kind), (args.export, cmd_export),
                                           (args.init, cmd_init), (args.sync, cmd_sync), (args.start, cmd_start),
                                           (args.move, cmd_move), (args.close, cmd_close), (args.report, cmd_report), (args.rollup is not None, cmd_rollup),
-                                          (args.promote, cmd_promote), (args.promote_all, cmd_promote_all), (args.open, cmd_open), (args.reopen, cmd_reopen)) if on), getattr(args, "fn", None))
+                                          (args.promote, cmd_promote), (args.promote_all, cmd_promote_all), (args.open, cmd_open), (args.reopen, cmd_reopen), (args.setup_dates, cmd_setup_dates),
+                                          (args.backfill_dates, cmd_backfill_dates)) if on), getattr(args, "fn", None))
         rc = handler(args)
         return rc if isinstance(rc, int) else 0
     except GhError as e:

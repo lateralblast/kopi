@@ -7,6 +7,16 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-10
+
+### Changed
+- Verified `fields`, `items` and both `add` forms (`--title` draft and `--url` issue) live on a scratch project; the temporary items were deleted afterwards. `fields` and `items` also work with `--json`.
+
+## [0.4.0] - 2026-10-10
+
+### Changed
+- Verified `--init` live on the create-and-link path: `kopi --init ~/code/ocicat` created project #3 `ocicat` under `lateralblast` and linked it to `lateralblast/ocicat`, and `list` shows the link. A second `--init` finds the existing project. This also exercised the optional `PATH` argument.
+
 ## [0.3.9] - 2026-10-10
 
 ### Added

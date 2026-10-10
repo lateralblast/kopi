@@ -7,6 +7,27 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-11
+
+### Added
+- `--local` with `--open`, `--reopen` and `--close`: edit only the local `ISSUES.md`, with no GitHub access or login. `--open TITLE --local` adds `- TITLE` (with `(labels: ...)` for `--label`) to `## Todo`, creating the file if needed and refusing an open duplicate title unless `--force`; `--close ISSUE --local` moves the entry to `## Done`; `--reopen ISSUE --local` moves it back to `## Todo`. `ISSUE` is matched by number, link or title as usual, and `--dry-run` and `--json` work. `--body` cannot be used with `--local`. Documented in `README.md`.
+
+### Changed
+- `--export issues` and `--squash` (and so `--sync`) now keep `ISSUES.md` entries that have no link, such as those added with `--open --local`, until a board issue with the same title exists, instead of dropping them when the file is regenerated. A file created locally starts with the same kopi marker line, so it is treated as generated.
+
+## [0.7.2] - 2026-10-11
+
+### Added
+- `--reopen ISSUE` (with `--dry-run`, `--json`): reopen a closed issue in the current repo and put it back on the project as Todo. `ISSUE` is a number, an issue URL, or text matching exactly one closed issue's title. On the board the issue's item is moved to Todo if it is Done or has no status, left alone if it is already Todo or In Progress, and added as Todo if it is missing; with no project the issue is still reopened. An already-open issue is reported and left alone. Documented in `README.md`.
+
+### Changed
+- `--close` and `--reopen` share their issue lookup. `--close` behaves as before.
+
+## [0.7.1] - 2026-10-11
+
+### Added
+- `--open TITLE` (with `--body TEXT`, `--label NAME` repeatable, `--dry-run`, `--force`, `--json`): create a new issue in the current repo and add it to the project as Todo, the counterpart of `--close`. It refuses when an open issue already has the same title unless `--force` is given, and it checks the project and its Todo status first so a failure does not leave a stray issue behind. `TODO.md` is not touched. Documented in `README.md`.
+
 ## [0.7.0] - 2026-10-11
 
 ### Added

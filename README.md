@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.7.0
+Version: 0.7.3
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -14,7 +14,7 @@ Version: 0.7.0
 - [Projects](#projects): [list](#listing-projects), [`--init`](#initialising-a-project-for-a-repo), [`set`](#setting-field-values-set)
 - [Files to board](#files-to-board): [`--import`](#importing-changelogmd-todomd-issues-and-prs), [`--update`](#updating-the-project-from-changelogmd-todomd-issues-and-prs), [`--diff`](#comparing-the-project-with-the-files---diff), [`--sync`](#syncing-both-ways---sync), [extra sources](#extra-sources---code-comments---releases), [single files](#importing-or-updating-a-single-file)
 - [Board to files](#board-to-files): [`--export`](#exporting-board-items-to-todomd---export), [`--squash`](#ticking-todomd-from-the-board---squash), [issues and PRs](#issues-and-prs)
-- [Working on items](#working-on-items): [`--list`](#listing-items---list), [`--done` / `--start` / `--move`](#moving-items---done---start---move), [`--promote`](#promoting-drafts-to-issues---promote---promote-all), [`--close`](#closing-an-issue---close), [`--archive`](#archiving-stale-items---archive), [`--restore`](#restoring-archived-items---restore), [`--dedupe`](#removing-duplicates---dedupe)
+- [Working on items](#working-on-items): [`--list`](#listing-items---list), [`--done` / `--start` / `--move`](#moving-items---done---start---move), [`--promote`](#promoting-drafts-to-issues---promote---promote-all), [`--open`](#opening-an-issue---open), [`--close`](#closing-an-issue---close), [`--reopen`](#reopening-an-issue---reopen), [`--archive`](#archiving-stale-items---archive), [`--restore`](#restoring-archived-items---restore), [`--dedupe`](#removing-duplicates---dedupe)
 - [Reports](#reports): [`--report`](#progress-report---report), [`--rollup`](#roll-up-across-projects---rollup)
 
 ## Quick start
@@ -63,7 +63,10 @@ cd ~/code/my-repo
 ./kopi.py --done ITEM [--dry-run]                         # move one board item to Done (ITEM: id or title text)
 ./kopi.py --start ITEM [--dry-run]                        # move one board item to In Progress
 ./kopi.py --move ITEM STATUS [--dry-run]                  # move one board item to any Status (Todo, In Progress, Done, ...)
+./kopi.py --open TITLE [--body T] [--label L] [--dry-run] # create a GitHub issue and add it to the project as Todo
+./kopi.py --open|--reopen|--close ... --local             # only edit the local ISSUES.md, nothing on GitHub
 ./kopi.py --close ISSUE [--dry-run]                       # close a GitHub issue (ISSUE: number, URL or title text)
+./kopi.py --reopen ISSUE [--dry-run]                      # reopen a closed issue and put it back on the project as Todo
 ./kopi.py --promote ITEM [--dry-run]                      # turn one draft board item into a real issue
 ./kopi.py --promote-all [todo|inprogress] [--dry-run|--yes]  # ...or every open draft (needs --yes)
 ./kopi.py --archive [PATH] [--dry-run] [--force]          # archive open board drafts no longer in TODO.md
@@ -151,7 +154,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--export todo|inprogress|done`: `{project, dry_run, file, added, already_present}`; `--export issues` / `prs`: `{project, dry_run, file, changed, issues|prs}`; `--import issues`: `{repo, dry_run, created: [{title, url?, closed, labels}], existing, unknown_labels}`.
 - `--squash`: `{project, dry_run, ticked: [{title, from}], issues: {file, changed, skipped, count} | null}`.
 - `--list`: an array of items, as under [`--list`](#listing-items---list).
-- `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--close`: `{repo, dry_run, closed: [{number, title, url}]}`; `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}]}`; `--promote-all`: the same plus `failed: [{title, id, error}]`.
+- `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--open`: `{project, repo, dry_run, created: {title, url, number, item_id} | null}` (with `--local`: `{file, dry_run, created: {title, labels}}`); `--close`: `{repo, dry_run, closed: [{number, title, url}]}` (with `--local`: `{file, dry_run, closed: [{title, number?, url?}]}`); `--reopen`: `{repo, dry_run, reopened: [{number, title, url}], board: {project?, action}}` (`action` is `moved`, `added`, `unchanged` or `skipped`); `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}]}`; `--promote-all`: the same plus `failed: [{title, id, error}]`.
 - `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--dedupe`: `{project, dry_run, deleted}`.
 - `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
 
@@ -270,7 +273,7 @@ By default `--import` and `--update` process both `CHANGELOG.md` and `TODO.md`, 
 
 **Exporting issues to ISSUES.md (`--export issues`).** `kopi --export issues` creates or updates `ISSUES.md` (`--squash` and `--sync` do the same whenever the project has issues). It writes the project's **issue** items to `ISSUES.md` in the current directory, as a snapshot grouped by board status (Todo, In Progress, Done, then No status), one bullet per issue: `- [#3](url) Title (labels)`. The reference includes the repository (`owner/repo#3`) when the board holds issues from more than one repo. Pull requests and draft items are not included, and the board's status is used, not the issue's open/closed state on GitHub.
 
-- Unlike the `TODO.md` exports, which only add what's missing, this **replaces** `ISSUES.md` each time, so it is always an exact picture of the board. The file starts with a comment line saying so. A file without that line (one you wrote by hand) is never overwritten unless you pass `--force`. Delete the comment line yourself to take over a generated file.
+- Unlike the `TODO.md` exports, which only add what's missing, this **replaces** `ISSUES.md` each time, so it is always an exact picture of the board, except that entries with no link (added with `--open --local`) are kept until a board issue with the same title exists. The file starts with a comment line saying so. A file without that line (one you wrote by hand) is never overwritten unless you pass `--force`. Delete the comment line yourself to take over a generated file.
 - If nothing changed the file is left alone ("ISSUES.md is up to date"). `--dry-run` lists the issues without writing.
 - The board is not changed. Whether `ISSUES.md` belongs in your repository (or in `.gitignore`) is up to you.
 
@@ -319,6 +322,16 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 - Because it creates many public issues in one go, a real run needs **`--yes`**. Without it, or with `--dry-run`, it only lists what would be promoted (and without `--yes` it then exits 1 saying so). Look at the list first: draft items you made by hand count too.
 - Items are converted one at a time, about a second apart. If one fails it is reported on stderr (and under `failed` in `--json`) and the rest carry on; the exit status is 1 if any failed. Items already promoted stay promoted, so re-running only retries what is still a draft.
 
+### Opening an issue (`--open`)
+
+`kopi --open "Add dark mode"` creates a new issue in the current repo (found from the git `origin`) and adds it to the project as **Todo**, in one step. It is the counterpart of `--close`. Add `--body "text"` for the description and `--label NAME` (repeatable) for labels; the labels must already exist in the repo. Use `--dry-run` to see what would happen.
+
+- If an open issue already has the same title (ignoring case) it refuses and names it, so a repeated command does not create a duplicate. Pass `--force` to create another anyway.
+- It checks that the project exists and that the board has a Todo status option (see `--status-map`) **before** creating anything, so a missing project does not leave a stray issue behind.
+- To start work on it, use `--start`; to turn an existing draft into an issue instead, use `--promote`. `TODO.md` is not changed.
+- Run it from the repo's directory; it takes no path argument because its value is the title.
+- **`--local`.** `kopi --open "Add dark mode" --local` only adds `- Add dark mode` to `## Todo` in `ISSUES.md` (with `(labels: bug, ui)` for `--label`, but no `--body`, since the file has no place for one). Nothing is created on GitHub or the board and no login is needed, so you can draft issues offline. The file is created if missing, and an open entry with the same title is refused unless `--force`. When you are ready, `kopi --import issues` creates the real issues. `--export issues` and `--squash` keep entries with no link until an issue with that title exists.
+
 ### Closing an issue (`--close`)
 
 `kopi --close ISSUE` closes one issue in the current repo (found from the git `origin`) on GitHub. `ISSUE` is an issue number (`12` or `#12`), an issue URL, or text that matches exactly one **open** issue's title, ignoring case: `kopi --close "dark mode"`. If several open issues match, an exact title match wins; otherwise it fails and lists the candidates with their numbers. Use `--dry-run` to see what would be closed.
@@ -326,6 +339,17 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 - An issue that is already closed is reported and left alone. Closed issues are not matched by title text, only by number or URL.
 - Only the issue changes. The project board catches up on the next `--update`, which moves a closed issue's item to Done; or move it now with `--done`.
 - Run it from the repo's directory; it takes no path argument because its value is the issue.
+- **`--local`.** `kopi --close ISSUE --local` only moves the matching entry in `ISSUES.md` to `## Done` (matched by number, link or title text among the entries not already Done). GitHub and the board are not touched and no login is needed. An entry that came from the board is rebuilt from the board by the next `--export issues` or `--squash`, so a local close of a linked issue lasts only until then; an entry with no link (see `--open --local`) is kept, and `kopi --import issues` will create it and close it.
+
+### Reopening an issue (`--reopen`)
+
+`kopi --reopen ISSUE` reopens a closed issue in the current repo and puts it back on the project as **Todo**. `ISSUE` is an issue number (`12` or `#12`), an issue URL, or text that matches exactly one **closed** issue's title, ignoring case (an exact title wins over partial matches; otherwise it fails and lists the candidates). It is the counterpart of `--close`. Use `--dry-run` to see what would happen.
+
+- An issue that is already open is reported and left alone. Open issues are not matched by title text, only by number or URL.
+- **Board.** If the issue's item is Done (or has no status) it is moved to Todo; if it is already Todo or In Progress it is left where it is; if the issue is not on the board it is added as Todo. kopi cannot know whether it was In Progress before it was closed, so Todo is the safe choice (`--start` moves it on). If the repo has no project, the issue is still reopened, with a warning.
+- Unlike `--update`, which never moves items backwards, this is an explicit request, so it does. `TODO.md` is not changed.
+- Run it from the repo's directory; it takes no path argument because its value is the issue.
+- **`--local`.** `kopi --reopen ISSUE --local` only moves the matching entry in `ISSUES.md` from `## Done` back to `## Todo`, with the same caveats as `--close --local`.
 
 ### Archiving stale items (`--archive`)
 

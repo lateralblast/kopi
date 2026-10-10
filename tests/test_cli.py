@@ -1917,3 +1917,225 @@ def test_squash_and_sync_json_report_the_issues_file(tmp_path, monkeypatch, caps
     assert json.loads(capsys.readouterr().out)["issues"] == {"file": "ISSUES.md", "changed": True, "skipped": None, "count": 3}
     _run_update(ISSUE_BOARD, argv=("--json", "--sync", "--dry-run"))
     assert json.loads(capsys.readouterr().out)["squash"]["issues"]["count"] == 3
+
+
+def _open(argv, existing=(), project=True, field_options=True):
+    """Run `--open`; returns (rc, calls to gh run, run_json calls)."""
+    calls = []
+
+    def fake_run(*a):
+        calls.append(a)
+        if a[:2] == ("issue", "list"):
+            return json.dumps(list(existing))
+        if a[:2] == ("issue", "create"):
+            return "https://github.com/lateralblast/kopi/issues/21\n"
+        return ""
+
+    def fake_json(*a):
+        return {"list": {"projects": [{"number": 2, "title": "kopi", "url": "u"}] if project else []},
+                "view": {"id": "PID"}, "item-add": {"id": "NEWITEM"},
+                "item-list": {"items": [{"id": "NEWITEM", "title": "x", "status": None}]},
+                "field-list": {"fields": [{"id": "FID", "name": "Status", "options": (
+                    [{"id": "o1", "name": "Todo"}, {"id": "o3", "name": "Done"}] if field_options else [{"id": "o9", "name": "Icebox"}])}]}}[a[1]]
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="lateralblast"), \
+         mock.patch("kopi.git_repo", return_value=("lateralblast", "kopi")), \
+         mock.patch("kopi.run", side_effect=fake_run), mock.patch("kopi.run_json", side_effect=fake_json) as rj:
+        rc = cli.main(list(argv))
+    return rc, calls, rj
+
+
+def test_open_creates_issue_and_adds_it_as_todo(capsys):
+    rc, calls, rj = _open(("--open", "Add dark mode", "--body", "Because night.", "--label", "enhancement", "--label", "ui"))
+    assert rc == 0
+    create = next(c for c in calls if c[:2] == ("issue", "create"))
+    assert create == ("issue", "create", "--repo", "lateralblast/kopi", "--title", "Add dark mode", "--body", "Because night.",
+                      "--label", "enhancement", "--label", "ui")
+    assert any(c.args[:3] == ("project", "item-add", "2") and "https://github.com/lateralblast/kopi/issues/21" in c.args
+               for c in rj.call_args_list)
+    edit = next(c for c in calls if c[:2] == ("project", "item-edit"))
+    assert edit[edit.index("--id") + 1] == "NEWITEM" and edit[edit.index("--single-select-option-id") + 1] == "o1"  # Todo
+    assert "Opened lateralblast/kopi#21: https://github.com/lateralblast/kopi/issues/21 (added to project #2 as Todo)" in capsys.readouterr().out
+
+
+def test_open_dry_run_json_and_guards(capsys):
+    rc, calls, _ = _open(("--json", "--open", "New thing", "--dry-run"))
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and data["dry_run"] is True and data["created"] is None and not any(c[:2] == ("issue", "create") for c in calls)
+    rc, calls, _ = _open(("--json", "--open", "New thing"))
+    assert json.loads(capsys.readouterr().out)["created"] == {
+        "title": "New thing", "url": "https://github.com/lateralblast/kopi/issues/21", "number": 21, "item_id": "NEWITEM"}
+    dup = [{"number": 4, "title": "ADD DARK MODE", "url": "https://github.com/lateralblast/kopi/issues/4"}]
+    rc, calls, _ = _open(("--open", "Add dark mode"), existing=dup)               # same title, open: refuse
+    assert rc == 1 and "already exists: #4" in capsys.readouterr().err and not any(c[:2] == ("issue", "create") for c in calls)
+    rc, calls, _ = _open(("--open", "Add dark mode", "--force"), existing=dup)    # --force allows it
+    assert rc == 0 and any(c[:2] == ("issue", "create") for c in calls)
+    # nothing is created when the board cannot take it, so no stray issue is left behind
+    assert _open(("--open", "X"), project=False)[0] == 1
+    rc, calls, _ = _open(("--open", "X"), field_options=False)
+    assert rc == 1 and not any(c[:2] == ("issue", "create") for c in calls) and "no option(s): Todo" in capsys.readouterr().err
+    assert _open(("--open", "   "))[0] == 1
+    with pytest.raises(SystemExit):
+        cli.main(["--update", "--label", "bug"])                                  # --label/--body belong to --open
+
+
+REOPEN_ISSUES = json.dumps([
+    {"number": 3, "title": "Old bug", "state": "CLOSED", "url": "https://github.com/lateralblast/kopi/issues/3"},
+    {"number": 4, "title": "Old bug again", "state": "CLOSED", "url": "https://github.com/lateralblast/kopi/issues/4"},
+    {"number": 5, "title": "Flaky test", "state": "CLOSED", "url": "https://github.com/lateralblast/kopi/issues/5"},
+    {"number": 6, "title": "Live one", "state": "OPEN", "url": "https://github.com/lateralblast/kopi/issues/6"}])
+
+
+def _reopen(argv, board=(), project=True):
+    calls = []
+
+    def fake_run(*a):
+        calls.append(a)
+        return REOPEN_ISSUES if a[:2] == ("issue", "list") else ""
+
+    def fake_json(*a):
+        return {"list": {"projects": [{"number": 2, "title": "kopi", "url": "u"}] if project else []},
+                "item-list": {"items": [dict(i) for i in board]}, "view": {"id": "PID"}, "item-add": {"id": "ADDED"},
+                "field-list": {"fields": [{"id": "FID", "name": "Status", "options": [
+                    {"id": "o1", "name": "Todo"}, {"id": "o2", "name": "In Progress"}, {"id": "o3", "name": "Done"}]}]}}[a[1]]
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="lateralblast"), \
+         mock.patch("kopi.git_repo", return_value=("lateralblast", "kopi")), \
+         mock.patch("kopi.run", side_effect=fake_run), mock.patch("kopi.run_json", side_effect=fake_json) as rj:
+        rc = cli.main(list(argv))
+    return rc, calls, rj
+
+
+def _item(id_, status, number):
+    return {"id": id_, "title": "x", "status": status,
+            "content": {"type": "Issue", "number": number, "repository": "lateralblast/kopi",
+                        "url": f"https://github.com/lateralblast/kopi/issues/{number}"}}
+
+
+def test_reopen_moves_the_done_board_item_back_to_todo(capsys):
+    rc, calls, _ = _reopen(("--reopen", "flaky"), board=[_item("IT5", "Done", 5)])
+    assert rc == 0 and ("issue", "reopen", "5", "--repo", "lateralblast/kopi") in calls
+    edit = next(c for c in calls if c[:2] == ("project", "item-edit"))
+    assert edit[edit.index("--id") + 1] == "IT5" and edit[edit.index("--single-select-option-id") + 1] == "o1"
+    assert "Reopened #5: Flaky test (board: moved)" in capsys.readouterr().out
+
+
+def test_reopen_adds_a_missing_item_and_leaves_active_ones(capsys):
+    rc, calls, rj = _reopen(("--reopen", "#3"))                        # not on the board: added as Todo
+    assert rc == 0 and any(c.args[:3] == ("project", "item-add", "2") and "https://github.com/lateralblast/kopi/issues/3" in c.args
+                           for c in rj.call_args_list)
+    assert next(c for c in calls if c[:2] == ("project", "item-edit"))[3] == "ADDED"
+    assert "board: added" in capsys.readouterr().out
+    rc, calls, _ = _reopen(("--reopen", "5"), board=[_item("IT5", "In Progress", 5)])   # already active: no board edit
+    assert rc == 0 and ("issue", "reopen", "5", "--repo", "lateralblast/kopi") in calls
+    assert not any(c[:2] == ("project", "item-edit") for c in calls) and "board: unchanged" in capsys.readouterr().out
+
+
+def test_reopen_guards_dry_run_json_and_no_project(capsys):
+    rc, calls, _ = _reopen(("--reopen", "6"))                          # already open
+    assert rc == 0 and not any(c[:2] == ("issue", "reopen") for c in calls) and "Already open: #6" in capsys.readouterr().out
+    rc, calls, _ = _reopen(("--json", "--reopen", "flaky", "--dry-run"), board=[_item("IT5", "Done", 5)])
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and data["reopened"][0]["number"] == 5 and data["board"] == {"project": 2, "action": "moved"}
+    assert not any(c[:2] in (("issue", "reopen"), ("project", "item-edit")) for c in calls)
+    assert _reopen(("--reopen", "old bug"))[0] == 0                    # two closed matches, but one is an exact title
+    assert _reopen(("--reopen", "old"))[0] == 1                        # two closed matches, none exact
+    assert _reopen(("--reopen", "live"))[0] == 1                       # text only matches closed issues; #6 is open
+    assert "matched 2 issues" in capsys.readouterr().err
+    rc, calls, _ = _reopen(("--reopen", "5"), project=False)           # no project: still reopened, with a warning
+    assert rc == 0 and ("issue", "reopen", "5", "--repo", "lateralblast/kopi") in calls
+    assert "not on a board" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        cli.main(["--reopen", "5", "--close", "6"])
+
+
+LOCAL_ISSUES = """<!-- Generated by kopi --export issues from project #2 (lateralblast). -->
+
+# Issues
+
+## Todo
+
+- [#3](https://github.com/o/kopi/issues/3) Login fails (bug)
+- Hand written one
+
+## In Progress
+
+- [#7](https://github.com/o/kopi/issues/7) Add dark mode
+
+## Done
+
+- [#9](https://github.com/o/kopi/issues/9) Fix typo
+"""
+
+
+def _local(tmp_path, monkeypatch, *argv, text=LOCAL_ISSUES):
+    monkeypatch.chdir(tmp_path)
+    if text is not None:
+        (tmp_path / "ISSUES.md").write_text(text)
+    with mock.patch("kopi.run") as run, mock.patch("kopi.run_json") as rj, mock.patch("kopi.check_auth") as auth:
+        rc = cli.main(list(argv))
+    assert not run.called and not rj.called and not auth.called   # --local never talks to GitHub, nor needs a login
+    return rc, ((tmp_path / "ISSUES.md").read_text() if (tmp_path / "ISSUES.md").exists() else None)
+
+
+def test_close_local_moves_the_entry_to_done(tmp_path, monkeypatch, capsys):
+    rc, text = _local(tmp_path, monkeypatch, "--close", "login", "--local")
+    assert rc == 0 and "Closed in ISSUES.md: #3 Login fails (local only)" in capsys.readouterr().out
+    done = text.split("## Done")[1]
+    assert "Login fails (bug)" in done and "Fix typo" in done and "Login fails" not in text.split("## Done")[0]
+    rc, text = _local(tmp_path, monkeypatch, "--close", "#7", "--local")          # by number; from In Progress
+    assert "Add dark mode" in text.split("## Done")[1]
+    rc, text = _local(tmp_path, monkeypatch, "--close", "hand written", "--local")  # a hand-written entry, by title
+    assert "Hand written one" in text.split("## Done")[1]
+    _local(tmp_path, monkeypatch, "--close", "9", "--local")                       # already closed
+    assert "Already closed: #9 Fix typo" in capsys.readouterr().out
+    assert _local(tmp_path, monkeypatch, "--close", "nothing", "--local")[0] == 1
+    assert _local(tmp_path, monkeypatch, "--close", "x", "--local", text=None)[0] == 1   # no ISSUES.md at all
+
+
+def test_reopen_local_moves_it_back_to_todo(tmp_path, monkeypatch, capsys):
+    rc, text = _local(tmp_path, monkeypatch, "--reopen", "typo", "--local")
+    assert rc == 0 and "Reopened in ISSUES.md: #9 Fix typo (local only)" in capsys.readouterr().out
+    assert "Fix typo" in text.split("## In Progress")[0] and "## Done" in text and "Fix typo" not in text.split("## Done")[1]
+    _local(tmp_path, monkeypatch, "--reopen", "3", "--local")                      # already open
+    assert "Already open: #3 Login fails" in capsys.readouterr().out
+    rc, text = _local(tmp_path, monkeypatch, "--json", "--reopen", "typo", "--local", "--dry-run")
+    assert text == LOCAL_ISSUES and json.loads(capsys.readouterr().out)["reopened"] == [
+        {"title": "Fix typo", "number": 9, "url": "https://github.com/o/kopi/issues/9"}]    # a dry run changes nothing
+
+
+def test_open_local_adds_an_unlinked_entry(tmp_path, monkeypatch, capsys):
+    rc, text = _local(tmp_path, monkeypatch, "--open", "Brand new", "--label", "bug", "--label", "ui", "--local")
+    assert rc == 0 and "Added to ISSUES.md: Brand new (local only" in capsys.readouterr().out
+    assert text.index("- Hand written one") < text.index("- Brand new (labels: bug, ui)") < text.index("## In Progress")
+    assert _local(tmp_path, monkeypatch, "--open", "BRAND new", "--local", text=text)[0] == 1   # now an open duplicate
+    assert _local(tmp_path, monkeypatch, "--open", "hand WRITTEN one", "--local")[0] == 1     # an open duplicate
+    assert _local(tmp_path, monkeypatch, "--open", "hand WRITTEN one", "--local", "--force")[0] == 0
+    # the entry can later be created on GitHub: it parses as a hand-written line with labels
+    assert ("Brand new", "", "Todo", ["bug", "ui"]) in cli.parse_issues_file(text)
+    with pytest.raises(SystemExit):
+        cli.main(["--open", "x", "--local", "--body", "text"])                   # ISSUES.md stores no body
+    with pytest.raises(SystemExit):
+        cli.main(["--update", "--local"])
+
+
+def test_open_local_creates_the_file_and_the_missing_section(tmp_path, monkeypatch, capsys):
+    rc, text = _local(tmp_path, monkeypatch, "--open", "First", "--local", text=None)
+    assert rc == 0 and text.startswith("<!-- Generated by kopi --export issues locally.") and "## Todo\n\n- First\n" in text
+    assert "_No issues" not in text
+    rc, text = _local(tmp_path, monkeypatch, "--close", "first", "--local", text=text)    # creates ## Done
+    assert "## Done\n\n- First\n" in text and text.index("## Todo") < text.index("## Done")
+    rc, text = _local(tmp_path, monkeypatch, "--open", "Second", "--local", text=text)
+    assert "## Todo\n\n- Second\n" in text
+
+
+def test_export_and_squash_keep_local_only_entries_until_an_issue_exists(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    text = cli.render_issues([], None, None, "issues", [("Only local", "Todo", ["bug"]), ("Now on GitHub", "Todo", [])])
+    assert "- Only local (labels: bug)" in text and "_No issues" not in text
+    _run_update(ISSUE_BOARD, argv=("--export", "issues"), issues_md=text)
+    out = (tmp_path / "ISSUES.md").read_text()
+    assert "- Only local (labels: bug)" in out and "[#3](https://github.com/o/kopi/issues/3) Login fails (bug)" in out
+    board = ISSUE_BOARD + [{"id": "N1", "title": "Now on GitHub", "status": "Todo",
+                            "content": {"type": "Issue", "number": 20, "repository": "o/kopi", "url": "https://github.com/o/kopi/issues/20"}}]
+    _run_update(board, argv=("--squash",), issues_md=out)                         # --squash rebuilds the file too
+    out2 = (tmp_path / "ISSUES.md").read_text()
+    assert "- Only local (labels: bug)" in out2 and out2.count("Now on GitHub") == 1 and "[#20]" in out2

@@ -8,6 +8,9 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] `--local` for `--open`, `--reopen` and `--close` (ISSUES.md only), with tests; exports keep unlinked local entries.
+- [x] `--reopen ISSUE` reopens a closed issue and puts it back on the project as Todo, with tests.
+- [x] `--open TITLE` creates an issue and adds it to the project as Todo, with tests.
 - [x] `--squash` / `--sync` also refresh `ISSUES.md` when the project has issues (`--export issues` already created and updated it), with tests.
 - [x] `--promote-all` bulk promotion of open drafts to issues (needs `--yes`), with tests.
 - [x] Verified `--promote` live on the `kopi` board: the draft became issue #2 in place (same item id, In Progress status and body kept); the test issue and item were then deleted.

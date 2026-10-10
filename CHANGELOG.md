@@ -7,6 +7,14 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-10-11
+
+### Changed
+- `--import` and `--update` (and so `--sync`) are much faster. Draft items are created, linked issues and PRs are added and their Status is set in batched GraphQL requests (20 operations each), as the Started / Completed dates already were, instead of two `gh` calls per item. Importing a 51-item repo dropped from about three minutes to 52 seconds, and most of what remains is the deliberate wait for GitHub's item listing to catch up; the resulting board is identical.
+- Long operations now report progress on stderr (never under `--json`): `Importing 51 items into project #7`, `Creating 50 draft items...`, `  created 20/50`, `Setting 51 statuses...`, `Waiting for GitHub to list the 51 new items...`, `Setting 102 dates...` and so on. Normal messages are flushed so they stay in order with it.
+- A GraphQL error in a batch now stops the run with all of GitHub's messages, instead of failing on one item.
+- Documented in `README.md`.
+
 ## [0.7.8] - 2026-10-11
 
 ### Changed

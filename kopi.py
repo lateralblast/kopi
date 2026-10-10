@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.7.8"
+__version__ = "0.7.9"
 
 
 class GhError(RuntimeError):
@@ -308,7 +308,7 @@ def emit(args, data):
 def say(args, msg):
     """Human-readable output; suppressed under --json so stdout holds only the JSON result."""
     if not args.json:
-        print(msg)
+        print(msg, flush=True)  # flushed so it stays in order with the progress lines on stderr
 
 
 def _item(status, title, url=None):
@@ -604,8 +604,15 @@ def load_extras(args, changelog):
     return extras
 
 
-def _status_setter(args, number, needed):
-    """Return set_status(item_id, status) for the project's Status field; error if an option is missing."""
+def progress(args, msg):
+    """Progress feedback for long operations: a line on stderr (so stdout stays clean), but not under --json."""
+    if not getattr(args, "json", False):
+        print(msg, file=sys.stderr, flush=True)
+
+
+def status_info(args, number, needed):
+    """The project's Status field: namespace(project_id, field_id, option(status) -> option id). GhError if the
+    project has no Status field or lacks an option for one of the `needed` statuses."""
     project_id = run_json("project", "view", str(number), *_owner(args))["id"]
     fields = run_json("project", "field-list", str(number), *_owner(args))["fields"]
     status_field = next((f for f in fields if f["name"] == "Status"), None)
@@ -618,12 +625,88 @@ def _status_setter(args, number, needed):
         raise GhError(f"Status field has no option(s): {', '.join(sorted(missing))}"
                       " (map them with --status-map, e.g. --status-map \"Todo=Backlog,Done=Shipped\")")
 
-    def set_status(item_id, status):
+    def option(status):
         status = canonical_status(status, args)
-        option = status_option(status, options, args) or options[status.lower()]
-        run("project", "item-edit", "--id", item_id, "--project-id", project_id,
-            "--field-id", status_field["id"], "--single-select-option-id", option)
+        return status_option(status, options, args) or options[status.lower()]
+    return SimpleNamespace(project_id=project_id, field_id=status_field["id"], option=option)
+
+
+def _status_setter(args, number, needed):
+    """Return set_status(item_id, status) for the project's Status field; error if an option is missing."""
+    info = status_info(args, number, needed)
+
+    def set_status(item_id, status):
+        run("project", "item-edit", "--id", item_id, "--project-id", info.project_id,
+            "--field-id", info.field_id, "--single-select-option-id", info.option(status))
     return set_status
+
+
+BATCH = 20  # GraphQL operations per request when creating items, setting statuses and writing dates
+
+
+def _gql_str(text):
+    """A GraphQL string literal for `text`."""
+    return json.dumps(text, ensure_ascii=False)
+
+
+def mutate_batched(args, parts, label):
+    """Run GraphQL mutation `parts` (each `fieldName(input: {...}) { ... }`) BATCH at a time, one request per batch,
+    reporting progress as `label n/total`. Returns each part's result data, in order; GhError on any GraphQL error."""
+    results = []
+    for i in range(0, len(parts), BATCH):
+        chunk = parts[i:i + BATCH]
+        result = graphql("mutation { " + " ".join(f"a{n}: {p}" for n, p in enumerate(chunk)) + " }")
+        if result.get("errors"):
+            raise GhError("; ".join(e.get("message", "?") for e in result["errors"]))
+        results += [result["data"][f"a{n}"] for n in range(len(chunk))]
+        progress(args, f"  {label} {len(results)}/{len(parts)}")
+    return results
+
+
+def content_ids(args, urls):
+    """{url: node id} for issue / pull request URLs, looked up BATCH at a time."""
+    found = {}
+    for i in range(0, len(urls), BATCH):
+        chunk = urls[i:i + BATCH]
+        result = graphql("query { " + " ".join(
+            f"a{n}: resource(url: {_gql_str(u)}) {{ ... on Issue {{ id }} ... on PullRequest {{ id }} }}"
+            for n, u in enumerate(chunk)) + " }")
+        if result.get("errors"):
+            raise GhError("; ".join(e.get("message", "?") for e in result["errors"]))
+        for n, u in enumerate(chunk):
+            node = (result["data"].get(f"a{n}") or {})
+            if not node.get("id"):
+                raise GhError(f"could not find {u} on GitHub")
+            found[u] = node["id"]
+    return found
+
+
+def create_items(args, info, drafts, urls):
+    """Create `drafts` ([(title, body)]) as draft items and add `urls` (issues / PRs) as linked items, in batched
+    requests. Returns the new item ids: the drafts' first, then the linked ones'."""
+    ids = []
+    if drafts:
+        progress(args, f"Creating {len(drafts)} draft items...")
+        ids += [r["projectItem"]["id"] for r in mutate_batched(args, [
+            f"addProjectV2DraftIssue(input: {{projectId: {_gql_str(info.project_id)}, title: {_gql_str(t)}, body: {_gql_str(b)}}}) "
+            "{ projectItem { id } }" for t, b in drafts], "created")]
+    if urls:
+        progress(args, f"Adding {len(urls)} issues and pull requests...")
+        nodes = content_ids(args, urls)
+        ids += [r["item"]["id"] for r in mutate_batched(args, [
+            f"addProjectV2ItemById(input: {{projectId: {_gql_str(info.project_id)}, contentId: {_gql_str(nodes[u])}}}) "
+            "{ item { id } }" for u in urls], "added")]
+    return ids
+
+
+def set_statuses(args, info, pairs):
+    """Set the Status of many items at once: pairs is [(item id, status)], written BATCH per request."""
+    if pairs:
+        progress(args, f"Setting {len(pairs)} statuses...")
+        mutate_batched(args, [
+            f"updateProjectV2ItemFieldValue(input: {{projectId: {_gql_str(info.project_id)}, itemId: {_gql_str(i)}, "
+            f"fieldId: {_gql_str(info.field_id)}, value: {{singleSelectOptionId: {_gql_str(info.option(st))}}}}}) "
+            "{ projectV2Item { id } }" for i, st in pairs], "set")
 
 
 SETTLE_TIMEOUT, SETTLE_INTERVAL = 30, 2
@@ -638,6 +721,7 @@ def wait_for_items(args, number, ids):
     pending = set(ids)
     if not pending:
         return
+    progress(args, f"Waiting for GitHub to list the {len(pending)} new items...")
     waited = 0
     while True:
         listed = {i["id"] for i in board_items(args, number)}
@@ -655,7 +739,6 @@ def wait_for_items(args, number, ids):
 # --- Started / Completed dates, for the project's Roadmap view ---------------------------------------------------
 DATE_KEYS = ("started", "completed")
 DEFAULT_DATE_FIELDS = {"started": "Started", "completed": "Completed"}
-DATE_BATCH = 20  # field updates per GraphQL request
 
 
 def dates_enabled(args):
@@ -793,13 +876,12 @@ class DateWriter:
     def flush(self, dry_run=False):
         """Write the queue (unless dry_run); returns [{title, field, date}] for what was (or would be) set."""
         done = [{"title": q["title"], "field": q["field"], "date": q["date"]} for q in self.queue]
-        for i in range(0, len(self.queue) * (not dry_run), DATE_BATCH):
-            parts = [f'a{n}: updateProjectV2ItemFieldValue(input: {{projectId: "{self.project_id}", itemId: "{q["id"]}", '
-                     f'fieldId: "{q["field_id"]}", value: {{date: "{q["date"]}"}}}}) {{ projectV2Item {{ id }} }}'
-                     for n, q in enumerate(self.queue[i:i + DATE_BATCH])]
-            result = graphql("mutation { " + " ".join(parts) + " }")
-            if result.get("errors"):
-                raise GhError("; ".join(e.get("message", "?") for e in result["errors"]))
+        if self.queue and not dry_run:
+            progress(self.args, f"Setting {len(self.queue)} dates...")
+            mutate_batched(self.args, [
+                f'updateProjectV2ItemFieldValue(input: {{projectId: "{self.project_id}", itemId: "{q["id"]}", '
+                f'fieldId: "{q["field_id"]}", value: {{date: "{q["date"]}"}}}}) {{ projectV2Item {{ id }} }}'
+                for q in self.queue], "set")
         self.queue = []
         return done
 
@@ -909,16 +991,10 @@ def cmd_import(args):
         say(args, f"Project #{number} already has items; nothing imported (use --force to import anyway)")
         emit(args, {"project": number, "dry_run": False, "imported": 0, "reason": "project already has items"})
         return
-    set_status = _status_setter(args, number, [st for st, *_ in plan + linked])
-
-    created = []
-    for status, title, body in plan:
-        created.append(run_json("project", "item-create", str(number), *_owner(args),
-                                "--title", title, "--body", body)["id"])
-        set_status(created[-1], status)
-    for status, _, url in linked:
-        created.append(run_json("project", "item-add", str(number), *_owner(args), "--url", url)["id"])
-        set_status(created[-1], status)
+    info = status_info(args, number, [st for st, *_ in plan + linked])
+    progress(args, f"Importing {total} items into project #{number}")
+    created = create_items(args, info, [(t, b) for _, t, b in plan], [u for _, _, u in linked])
+    set_statuses(args, info, list(zip(created, [st for st, *_ in plan + linked])))
     wait_for_items(args, number, created)
     made = [{"id": i, "title": t, "status": st, "content": {"body": b}} for i, (st, t, b) in zip(created, plan)]
     made += [{"id": i, "title": t, "status": st, "content": {"url": u}} for i, (st, t, u) in zip(created[len(plan):], linked)]
@@ -1063,18 +1139,11 @@ def cmd_update(args):
         say(args, f"Project #{number} is up to date" + (f" ({len(dates)} dates set)" if dates else ""))
         emit(args, {**report, **({"dates": dates} if dates else {}), **({"date_fields_created": fields} if fields else {})})
         return
-    set_status = _status_setter(args, number,
-                                [st for st, *_ in adds + link_adds] + [new for _, _, new, _ in moves])
-    created = []
-    for status, title, body in adds:
-        created.append(run_json("project", "item-create", str(number), *_owner(args),
-                                "--title", title, "--body", body)["id"])
-        set_status(created[-1], status)
-    for status, _, url in link_adds:
-        created.append(run_json("project", "item-add", str(number), *_owner(args), "--url", url)["id"])
-        set_status(created[-1], status)
-    for item, _, new, _ in moves:
-        set_status(item["id"], new)
+    info = status_info(args, number, [st for st, *_ in adds + link_adds] + [new for _, _, new, _ in moves])
+    progress(args, f"Updating project #{number}: {len(adds) + len(link_adds)} to add, {len(moves)} to move")
+    created = create_items(args, info, [(t, b) for _, t, b in adds], [u for _, _, u in link_adds])
+    set_statuses(args, info, list(zip(created, [st for st, *_ in adds + link_adds]))
+                 + [(item["id"], new) for item, _, new, _ in moves])
     wait_for_items(args, number, created)
     made = [{"id": i, "title": t, "status": st, "content": {"body": b}} for i, (st, t, b) in zip(created, adds)]
     made += [{"id": i, "title": t, "status": st, "content": {"url": u}} for i, (st, t, u) in zip(created[len(adds):], link_adds)]

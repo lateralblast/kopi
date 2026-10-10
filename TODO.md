@@ -7,6 +7,7 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] Batch item creation, status and date writes in `--import` / `--update` and report progress (51-item import: ~3 minutes -> 52 seconds, identical result), with tests.
 - [x] `--import` / `--update` create the date fields and backfill dates on every item (with `--no-dates` and `[dates] enabled` to opt out), with tests.
 - [x] Roadmap dates: Started / Completed fields set from CHANGELOG.md headings, TODO.md tick commits, issue/PR and tag dates; `--setup-dates`, `--backfill-dates`, stamping on `--start` / `--done`; with tests, verified live.
 - [x] Verified `--open`, `--reopen`, `--close`, `--promote --annotate` and `--promote-all --yes` live on throwaway issues; fixed an `--annotate` matching bug found doing it, and added a rate-limit hint.

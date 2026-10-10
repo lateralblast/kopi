@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.7.8
+Version: 0.7.9
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -168,6 +168,26 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
 
 ### Limits
+
+### Speed and progress
+
+`--import` and `--update` write in batches: items are created, linked issues and PRs are added, and Status and date values are set 20 at a time in single GraphQL requests, so even a long history imports in under a minute (a 51-item repo took 52 seconds, much of it waiting for GitHub to list the new items so an immediate re-run does not add them twice). While they work they print progress on stderr, for example:
+
+```
+Importing 51 items into project #7
+Creating 50 draft items...
+  created 20/50
+  created 40/50
+  created 50/50
+Setting 51 statuses...
+  set 20/51
+Waiting for GitHub to list the 51 new items...
+Setting 102 dates...
+```
+
+Progress is never printed with `--json`, so a script's stderr stays quiet as well as its stdout. A GraphQL error in a batch stops the run and shows all of GitHub's messages.
+
+### Item limits
 
 `kopi` reads up to 1000 projects, 5000 board items and 5000 issues (and, separately, PRs) per repo. `gh` pages through results, so these are effectively "everything" for normal boards. If a lookup reaches its cap, `kopi` prints a warning on stderr rather than silently dropping the rest.
 

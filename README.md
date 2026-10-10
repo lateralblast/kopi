@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.5.9
+Version: 0.6.1
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -21,17 +21,22 @@ Version: 0.5.9
 ./kopi.py --import [PATH|FILE] [--dry-run] [--force]      # seed the project from CHANGELOG.md, TODO.md, issues and PRs
 ./kopi.py --import issues [--dry-run]                     # create a GitHub issue for each ISSUES.md entry that has none
 ./kopi.py --update [PATH|FILE] [--dry-run]                # sync CHANGELOG.md / TODO.md changes into the project
-./kopi.py --diff [PATH]                                   # show how the project differs from the files/issues/PRs
+./kopi.py --diff [PATH] [--check]                         # show how the project differs from the files/issues/PRs (--check: exit 2 if it does)
+./kopi.py --sync [PATH] [--dry-run]                       # --update then --squash: files/GitHub -> board, Done on board -> ticks in TODO.md
 ./kopi.py --archive [PATH] [--id ID | --match TEXT]       # archive one item (see below)
 ./kopi.py --archive [PATH] [--dry-run] [--force]          # archive open board drafts no longer in TODO.md
 ./kopi.py --export todo|inprogress|done [--dry-run]       # add the board's items to TODO.md as [ ] / [~] / [x] entries
 ./kopi.py --export issues [--dry-run] [--force]           # write the board's issues to ISSUES.md
 ./kopi.py --export prs [--dry-run] [--force]              # write the board's pull requests to PRS.md
 ./kopi.py --list todo|inprogress|done [--local]           # list the project's items by status (or the matching entries in TODO.md)
+./kopi.py --list issues|prs [--local]                     # list the project's issue / PR items (or the entries in ISSUES.md / PRS.md)
 ./kopi.py --done ITEM [--dry-run]                         # move one board item to Done (ITEM: id or title text)
+./kopi.py --start ITEM [--dry-run]                        # move one board item to In Progress
+./kopi.py --move ITEM STATUS [--dry-run]                  # move one board item to any Status (Todo, In Progress, Done, ...)
 ./kopi.py --restore [PATH] [--dry-run] [--id ID | --all]  # unarchive items that --archive archived (or all archived)
 ./kopi.py --squash [PATH] [--dry-run]                     # tick TODO.md entries that are Done on the board
 ./kopi.py --dedupe [PATH] [--dry-run]                     # delete duplicate board items
+./kopi.py --status-map "Todo=Backlog,Done=Shipped" ...     # name the board's Status options if they differ (see below)
 ./kopi.py --json <command or mode>                        # print the result as JSON (see below)
 ./kopi.py --version
 ```
@@ -47,12 +52,26 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `list`: array of `{number, title, state, repos, url}`; `fields` and `items`: the `gh` arrays; `view`: the project object (always JSON).
 - `create`: `{number, url, linked_repo}`; `--init`: `{number, created}`; `delete`: `{deleted}`; `add`: `{added}`.
 - `--import` and `--update`: `{project, dry_run, added: [{status, title, url?}], moved: [{title, from, to}]}` (`--import` reports `items`, `skipped` on a dry run and `imported` otherwise).
-- `--diff`: `{project, files_only, github_only, board_only, duplicates, behind, ahead}`.
-- `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--done`: `{project, dry_run, moved: [{title, from, to}]}`; `--squash`: `{project, dry_run, ticked: [{title, from}]}`; `set`: `{project, dry_run, item, field, value}`; `--list`: an array of items, as above; `--dedupe`: `{project, dry_run, deleted}`.
+- `--diff`: `{project, files_only, github_only, board_only, duplicates, behind, ahead, in_sync}`.
+- `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--sync`: `{project, dry_run, update, squash}` (the `--update` and `--squash` results); `--squash`: `{project, dry_run, ticked: [{title, from}]}`; `set`: `{project, dry_run, item, field, value}`; `--list`: an array of items, as above; `--dedupe`: `{project, dry_run, deleted}`.
+
+## Boards with other Status names (`--status-map`)
+
+kopi works with three statuses: **Todo**, **In Progress** and **Done**. If your board's Status field uses other option names, common ones are recognised automatically: Backlog, Open, Ready and Not started count as Todo; Doing, WIP, Started and Active as In Progress; Complete, Completed, Closed, Finished and Shipped as Done. For anything else, name them yourself:
+
+```
+kopi --status-map "Todo=Icebox,In Progress=Building,Done=Released" --update
+```
+
+Each pair is `Todo|In Progress|Done=OPTION`, and the option names are matched case-insensitively. Reading a board, kopi shows the statuses as Todo / In Progress / Done; writing one, it uses the board's own option (an exact `Todo` / `In Progress` / `Done` option is preferred if the board has one). If a status has no matching option, the command fails and names it, suggesting this flag. The flag is global, so put it before the command, and it is not remembered between runs.
+
+## Limits
+
+`kopi` reads up to 1000 projects, 5000 board items and 5000 issues (and, separately, PRs) per repo. `gh` pages through results, so these are effectively "everything" for normal boards. If a lookup reaches its cap, `kopi` prints a warning on stderr rather than silently dropping the rest.
 
 ## Initialising a project for a repo
 
-Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a project (under the resolved owner, see below) whose title matches the repo name. If one exists it prints it and does nothing; otherwise it creates a project with that title and links it to the repo. If the link fails the project is still created and `kopi` prints a warning and exits 0. The link is skipped, with a note, if `--owner` differs from the repo's owner, because `gh` only links repos under the same owner. Only the first 100 projects are searched.
+Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a project (under the resolved owner, see below) whose title matches the repo name. If one exists it prints it and does nothing; otherwise it creates a project with that title and links it to the repo. If the link fails the project is still created and `kopi` prints a warning and exits 0. The link is skipped, with a note, if `--owner` differs from the repo's owner, because `gh` only links repos under the same owner. Up to 1000 projects are searched.
 
 ## Importing CHANGELOG.md, TODO.md, issues and PRs
 
@@ -87,6 +106,12 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 - `duplicate`: an extra copy of a board item (same title, or same issue/PR URL), with the status of the copy `--dedupe` would keep. Each duplicate is listed once, here, not also as `board-only`. Run `kopi --dedupe` to remove them.
 - `behind`: the board's status is behind the file or GitHub (`--update` would move it forward).
 - `ahead`: the board's status is ahead of the file (for example Done on the board, still `[ ]` in `TODO.md`). `--update` leaves these alone.
+
+Add `--check` to use it as a gate in CI or a pre-commit hook: the exit status is 0 when there are no differences and **2** when there are (1 stays reserved for errors such as a missing project or `gh` failure). The report is printed either way, and `--json` includes `in_sync`.
+
+## Syncing both ways (`--sync`)
+
+`kopi --sync [PATH]` runs `--update` and then `--squash`: anything in `CHANGELOG.md`, `TODO.md`, issues and PRs that the board lacks (or is behind on) goes into the board, then `TODO.md` entries that are Done on the board are ticked. Use `--dry-run` to preview both steps; the squash step is then planned from the board as it is now, before `--update`'s changes would land. With `--json` the two results are one document, `{project, dry_run, update, squash}`. It takes a directory like `--update`, but not a single file. The `--export` modes stay separate because they write new entries and files; run them yourself when you want them.
 
 ## Archiving stale items (`--archive`)
 
@@ -136,6 +161,8 @@ Give `--archive` an item to archive just that one, ignoring the files and the or
 
 Add `--local` to list entries from the local `TODO.md` instead, one title per line: `--list todo --local` gives the open entries (the `[ ]` checkbox, matching the Todo status on the board), `--list inprogress --local` the `[~]` ones and `--list done --local` the ticked ones (`[x]`). The changelog is not read. `--local` reads the file only, so it needs no GitHub access, no login and no network. It reads `TODO.md` in the current directory.
 
+`kopi --list issues` and `kopi --list prs` list the project's issue or pull request items instead, whatever their status: `id`, title and URL per line (the other kinds list by status). With `--local` they read `ISSUES.md` / `PRS.md` and print the title and, when the entry has a link, its URL. This is the same split `--export issues` / `--export prs` use.
+
 With `--json`, both forms print an array: `{id, status, title, url?}` for the project and `{status, title}` for the file. Comparing the two lists is a quick way to see where the board and the file disagree; `--diff` does that in full.
 
 ## Exporting board items to TODO.md (`--export`)
@@ -159,8 +186,9 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 `kopi --import issues` reads `ISSUES.md` in the current directory and creates a GitHub issue (in the repo's `origin`) for each bullet that has no issue yet. It accepts the lines `--export issues` writes (`- [#3](url) Title (labels)`) and hand-written ones (`- Title`, `- [ ] Title`).
 
 - An entry already exists if its link points at an existing issue or at another repo, or if its title matches an issue's title (case-insensitive, open or closed). Existing issues are left alone.
-- Entries under a `## Done` heading are closed after they are created. Labels are not applied.
-- `--dry-run` lists what would be created. `--json` prints `{repo, dry_run, created: [{title, url?, closed}], existing}`. A directory named `issues` takes precedence over this mode.
+- Entries under a `## Done` heading are closed after they are created.
+- Labels are applied when the repo already has them (matched case-insensitively): the trailing `(bug, docs)` on an exported line, or `(labels: bug, docs)` on a hand-written one. Labels the repo lacks are not created; they are reported on stderr and as `unknown_labels` in `--json`.
+- `--dry-run` lists what would be created. `--json` prints `{repo, dry_run, created: [{title, url?, closed, labels}], existing, unknown_labels}`. A directory named `issues` takes precedence over this mode.
 
 ### Exporting issues to ISSUES.md (`--export issues`)
 
@@ -185,6 +213,14 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 - It moves items from Todo or In Progress. An item that is already Done is reported and left alone. Use `--dry-run` to preview.
 - It changes the board only. `TODO.md`, `CHANGELOG.md` and any linked issue or PR are not touched, so tick the item in `TODO.md` too, or the next `--update` will see the board ahead of the file (shown as `ahead` by `--diff`, never moved back).
 - Run it from the repo's directory (the project is found from the git `origin`); it takes no path argument because its value is the item.
+
+## Starting and moving items (`--start`, `--move`)
+
+`kopi --start ITEM` moves one board item to **In Progress**. `kopi --move ITEM STATUS` moves it to any Status option: `Todo`, `In Progress`, `Done`, or another option your board has. `STATUS` is case-insensitive and `inprogress` / `in-progress` are accepted. `ITEM` is an item id or text matching exactly one title, as for `--done`, and the same rules apply (board only, `--dry-run`, run from the repo's directory).
+
+- Unlike `--update`, which only moves items forward, these may move an item **backwards**, for example `kopi --move "dark mode" Todo` to reopen a Done item.
+- An item already in the target status is reported and left alone. A `STATUS` the board does not have fails with an error naming it.
+- `kopi --done ITEM` is the same as `kopi --move ITEM Done`.
 
 ## Restoring archived items (`--restore`)
 

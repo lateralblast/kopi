@@ -7,6 +7,27 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-10
+
+### Added
+- `--status-map "Todo=Backlog,In Progress=Doing,Done=Shipped"`: name the board's Status options when they differ from Todo / In Progress / Done. Common names (Backlog, Doing, WIP, Complete, Shipped, ...) are recognised without it, so boards with other option names now work with `--import`, `--update`, `--list`, `--done`, `--move` and the rest. Statuses are shown under their Todo / In Progress / Done names, and writes use the board's own option.
+- `--list issues` and `--list prs`: the project's issue or pull request items (any status) as `id`, title and URL; with `--local`, the entries in `ISSUES.md` / `PRS.md`.
+- `--import issues` applies labels: the `(labels)` on exported lines, or `(labels: a, b)` on hand-written ones, for labels the repo already has. Unknown labels are reported on stderr (and as `unknown_labels` in `--json`), not created.
+
+### Fixed
+- Lookups no longer stop silently at fixed caps (100 projects, 500 board items, 200 issues/PRs per repo): they now go up to 1000 projects, 5000 items and 5000 issues/PRs, and warn on stderr if a cap is reached.
+
+## [0.6.0] - 2026-10-10
+
+### Added
+- `--diff --check`: exit with status 2 when the board and the files differ (0 when in sync; 1 stays reserved for errors), for CI and pre-commit hooks. `--diff --json` now also reports `in_sync`.
+- `--sync [PATH]` (with `--dry-run`): run `--update` then `--squash` in one step, so files and GitHub flow into the board and Done items are ticked back in `TODO.md`. With `--json` the two results are one document, `{project, dry_run, update, squash}`. The `--export` modes stay separate.
+- `--start ITEM`: move one board item to In Progress, like `--done`.
+- `--move ITEM STATUS`: move one board item to any Status option (Todo, In Progress, Done or a custom one; case-insensitive, `inprogress` and `in-progress` accepted). Moves may go backwards, to reopen an item.
+
+### Changed
+- `--done`, `--start` and `--move` share one implementation. `--done` behaves as before.
+
 ## [0.5.9] - 2026-10-10
 
 ### Changed

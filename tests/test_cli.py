@@ -691,7 +691,7 @@ def test_json_update_dry_run_and_real(capsys):
 def test_json_diff_and_dedupe_and_archive(capsys):
     _run_update(BOARD, argv=("--json", "--diff"))
     data, _ = _json_out(capsys)
-    assert set(data) == {"project", "files_only", "github_only", "board_only", "duplicates", "behind", "ahead"}
+    assert set(data) == {"project", "files_only", "github_only", "board_only", "duplicates", "behind", "ahead", "in_sync"}
     _run_update(DUPES, argv=("--json", "--dedupe", "--dry-run"))
     data, _ = _json_out(capsys)
     assert [i["title"] for i in data["deleted"]] == ["[0.2.3] Verified  update live.", "Same idea", "Issue"]
@@ -1277,6 +1277,8 @@ def _import_issues(args, tmp_path, monkeypatch):
         calls.append(a)
         if a[:2] == ("issue", "list"):
             return existing
+        if a[:2] == ("label", "list"):
+            return json.dumps([{"name": "X"}, {"name": "docs"}])
         return "https://github.com/me/r/issues/10\n"
     with mock.patch("kopi.check_auth"), mock.patch("kopi.git_repo", return_value=("me", "r")), \
          mock.patch("kopi.run", side_effect=fake_run):
@@ -1291,14 +1293,18 @@ def test_import_issues_creates_missing(tmp_path, monkeypatch):
     assert [c[c.index("--title") + 1] for c in created] == ["Brand new", "Gone issue"]
     assert ("issue", "close", "https://github.com/me/r/issues/10") in calls
     assert len([c for c in calls if c[:2] == ("issue", "close")]) == 1
+    gone = created[1]
+    assert [gone[i + 1] for i, a in enumerate(gone) if a == "--label"] == ["X"]  # "x" matched the repo's "X"; "y" is unknown
+    assert "--label" not in created[0]  # "Brand new" has none
 
 
 def test_import_issues_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
     rc, calls = _import_issues(["--json", "--import", "issues", "--dry-run"], tmp_path, monkeypatch)
     assert rc == 0
-    assert all(c[:2] == ("issue", "list") for c in calls)
+    assert all(c[:2] in (("issue", "list"), ("label", "list")) for c in calls)  # reads only
     out = json.loads(capsys.readouterr().out)
     assert [c["title"] for c in out["created"]] == ["Brand new", "Gone issue"]
+    assert out["created"][1]["labels"] == ["X"] and out["unknown_labels"] == ["y"]
     assert out["existing"] == ["Existing one", "Hand written", "Elsewhere"]
 
 
@@ -1307,3 +1313,134 @@ def test_import_issues_needs_file(tmp_path, monkeypatch):
     with mock.patch("kopi.check_auth"), mock.patch("kopi.git_repo", return_value=("me", "r")), \
          mock.patch("kopi.run"):
         assert cli.main(["--import", "issues"]) == 1
+
+
+def test_diff_check_exit_status(capsys):
+    assert _run_update(BOARD, argv=("--diff", "--check"))[0] == 2      # drifted: distinct from the error status 1
+    assert _run_update(BOARD, argv=("--diff",))[0] == 0                # no --check: report only
+    assert _run_update(SETTLED, argv=("--diff", "--check"))[0] == 0    # in sync
+    capsys.readouterr()
+    assert _run_update(BOARD, argv=("--json", "--diff", "--check"))[0] == 2
+    assert json.loads(capsys.readouterr().out)["in_sync"] is False
+    _run_update(SETTLED, argv=("--json", "--diff", "--check"))
+    assert json.loads(capsys.readouterr().out)["in_sync"] is True
+    with pytest.raises(SystemExit):
+        cli.main(["--update", "--check"])
+
+
+def test_start_moves_to_in_progress(capsys):
+    rc, rj, run = _run_update(ORPHANS, argv=("--start", "old idea nobody"))
+    assert rc == 0 and _edited(run) == [("O", "o2")]
+    assert "Moved to In Progress: Old idea nobody wants (was Todo)" in capsys.readouterr().out
+    rc, rj, run = _run_update(ORPHANS, argv=("--start", "OP"))   # already In Progress
+    assert _edited(run) == [] and "Already In Progress" in capsys.readouterr().out
+
+
+def test_move_any_direction_with_aliases(capsys):
+    rc, rj, run = _run_update(ORPHANS, argv=("--move", "OD", "todo"))   # Done -> Todo: explicit moves may go back
+    assert rc == 0 and _edited(run) == [("OD", "o1")]
+    rc, rj, run = _run_update(ORPHANS, argv=("--move", "O", "in-progress"))
+    assert _edited(run) == [("O", "o2")]
+    capsys.readouterr()
+    rc, rj, run = _run_update(ORPHANS, argv=("--json", "--move", "O", "DONE", "--dry-run"))
+    assert _edited(run) == []
+    assert json.loads(capsys.readouterr().out)["moved"] == [{"title": "Old idea nobody wants", "from": "Todo", "to": "Done"}]
+    assert _run_update(ORPHANS, argv=("--move", "O", "Blocked"))[0] == 1   # no such Status option
+    assert "no option(s): Blocked" in capsys.readouterr().err
+    assert _run_update(ORPHANS, argv=("--move", "old", "Done"))[0] == 1    # ambiguous text
+    with pytest.raises(SystemExit):
+        cli.main(["--move", "O"])  # needs ITEM and STATUS
+
+
+def test_sync_runs_update_then_squash(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc, rj, run = _run_update(SQUASH_BOARD, argv=("--sync",))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Updated project #2" in out and "TODO.md items ticked" in out
+    assert (tmp_path / "TODO.md").exists()  # the squash step ticked entries that are Done on the board
+
+
+def test_sync_json_is_one_document(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _run_update(SQUASH_BOARD, argv=("--json", "--sync", "--dry-run"))
+    data = json.loads(capsys.readouterr().out)  # a single document, not two
+    assert data["dry_run"] is True and data["project"] == 2
+    assert set(data["update"]) == {"project", "dry_run", "added", "moved"}
+    assert sorted(x["from"] for x in data["squash"]["ticked"]) == ["In Progress", "Todo"]
+    with pytest.raises(SystemExit):
+        cli.main(["--sync", "--update"])  # modes stay mutually exclusive
+
+
+def test_import_issues_hand_written_labels():
+    text = "- Plain\n- Tagged (labels: docs, nope)\n- Done one (label: X)\n"
+    assert [(e[0], e[3]) for e in cli.parse_issues_file(text)] == [
+        ("Plain", []), ("Tagged", ["docs", "nope"]), ("Done one", ["X"])]
+
+
+STATUS_BOARD = [
+    {"id": "B1", "title": "Backlogged", "status": "Backlog"},
+    {"id": "D1", "title": "Doing it", "status": "Doing"},
+    {"id": "S1", "title": "Shipped it", "status": "Shipped"},
+]
+
+
+def _run_custom(items, argv, options=("Backlog", "Doing", "Shipped")):
+    def fake(*a):
+        return {"list": {"projects": [{"number": 2, "title": "kopi", "url": "u"}]}, "item-list": {"items": [dict(i) for i in items]},
+                "view": {"id": "PID"},
+                "field-list": {"fields": [{"id": "FID", "name": "Status",
+                                           "options": [{"id": f"o{n}", "name": o} for n, o in enumerate(options, 1)]}]}}[a[1]]
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="lateralblast"), \
+         mock.patch("kopi.git_repo", return_value=("lateralblast", "kopi")), \
+         mock.patch("kopi.run_json", side_effect=fake), mock.patch("kopi.run") as run:
+        return cli.main(list(argv)), run
+
+
+def test_custom_status_names_are_recognised(capsys):
+    rc, _ = _run_custom(STATUS_BOARD, ("--json", "--list", "done"))
+    assert rc == 0 and [r["id"] for r in json.loads(capsys.readouterr().out)] == ["S1"]
+    rc, _ = _run_custom(STATUS_BOARD, ("--json", "--list", "inprogress"))
+    assert [r["id"] for r in json.loads(capsys.readouterr().out)] == ["D1"]
+    rc, run = _run_custom(STATUS_BOARD, ("--move", "Backlogged", "done"))   # writes the board's own option name
+    assert rc == 0 and _edited(run) == [("B1", "o3")]
+    rc, run = _run_custom(STATUS_BOARD, ("--start", "Backlogged"))
+    assert _edited(run) == [("B1", "o2")]
+
+
+def test_status_map_overrides_and_validates(capsys):
+    items = [{"id": "X1", "title": "Parked", "status": "Icebox"}]
+    rc, run = _run_custom(items, ("--status-map", "Todo=Icebox,Done=Closed It", "--move", "Parked", "Done"),
+                          options=("Icebox", "Doing", "Closed It"))
+    assert rc == 0 and _edited(run) == [("X1", "o3")]
+    rc, run = _run_custom(items, ("--move", "Parked", "Done"), options=("Icebox", "Doing", "Closed It"))
+    err = capsys.readouterr().err
+    assert rc == 1 and "no option(s): Done" in err and "--status-map" in err
+    with pytest.raises(SystemExit):
+        cli.main(["--status-map", "Nonsense", "list"])
+    assert cli.parse_status_map("todo=Backlog, In Progress=Doing") == {"Todo": "Backlog", "In Progress": "Doing"}
+
+
+def test_limits_cover_big_boards_and_warn_when_full(capsys):
+    with mock.patch("kopi.run_json", return_value={"items": []}) as rj:
+        cli.board_items(SimpleNs(owner="o", status_map=None), 2)
+    assert rj.call_args.args[-1] == str(cli.ITEM_LIMIT)
+    with mock.patch("kopi.ITEM_LIMIT", 2), mock.patch("kopi.run_json", return_value={"items": [{"id": "a"}, {"id": "b"}]}):
+        cli.board_items(SimpleNs(owner="o", status_map=None), 2)
+    assert "stopped at the limit of 2" in capsys.readouterr().err
+
+
+def SimpleNs(**kw):
+    import types
+    return types.SimpleNamespace(**kw)
+
+
+def test_list_issues_and_prs_from_board_and_files(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _run_update(ISSUE_BOARD, argv=("--json", "--list", "issues"))
+    assert [r["url"].rsplit("/", 1)[1] for r in json.loads(capsys.readouterr().out)] == ["3", "7", "9"]
+    _run_update(ISSUE_BOARD, argv=("--list", "prs"))
+    assert capsys.readouterr().out == "PR1\tA pull request\thttps://github.com/o/kopi/pull/8\n"
+    _run_update([], argv=("--list", "issues", "--local"), issues_md=ISSUES_TEXT)  # no GitHub lookup needed
+    out = capsys.readouterr().out
+    assert "Brand new\n" in out and "Existing one\thttps://github.com/me/r/issues/1" in out

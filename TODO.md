@@ -8,6 +8,7 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] Describe kopi as "Keep Our Projects In-sync" in the help text, docstring, `pyproject.toml`, `README.md` and `CLAUDE.md`.
 - [x] `--restore --all` finds items archived outside kopi via GraphQL (`isArchived`), with tests; probed live.
 - [x] `--export prs` to a local `PRS.md`, with tests.
 - [x] `--import issues` creates GitHub issues from `ISSUES.md` where none exist, with tests.

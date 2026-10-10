@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-10-10
+
+### Changed
+- kopi now describes itself as **KOPI: Keep Our Projects In-sync**: updated the `--help` description, the `kopi.py` docstring, the `pyproject.toml` description, the `README.md` intro and `CLAUDE.md`.
+
 ## [0.5.8] - 2026-10-10
 
 ### Added

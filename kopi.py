@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""kopi: create and manage GitHub Projects (v2) from the command line.
+"""kopi (Keep Our Projects In-sync): create and manage GitHub Projects (v2) from the command line, and keep them
+in step with CHANGELOG.md, TODO.md, issues and PRs.
 
 Shells out to the `gh` CLI, which handles authentication.
 Requires the `project` scope: gh auth refresh -s project
@@ -17,7 +18,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.5.8"
+__version__ = "0.5.9"
 
 
 class GhError(RuntimeError):
@@ -1196,7 +1197,8 @@ def cmd_add(args):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="kopi", description="Manage GitHub Projects (v2)")
+    p = argparse.ArgumentParser(prog="kopi", description="KOPI: Keep Our Projects In-sync. Manage GitHub Projects (v2) and keep them in step with "
+                                "CHANGELOG.md, TODO.md, issues and PRs")
     p.add_argument("--version", action="version", version=f"kopi {__version__}")
     p.add_argument("--owner", help="user or org (default: owner of the current git repo's origin, else @me)")
     p.add_argument("--init", nargs="?", const=".", metavar="PATH",

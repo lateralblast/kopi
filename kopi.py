@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 
-__version__ = "0.1.8"
+__version__ = "0.2.1"
 
 
 class GhError(RuntimeError):
@@ -102,20 +102,24 @@ def cmd_create(args):
     return p
 
 
+def find_project(args):
+    """Return (project or None, (repo_owner, repo_name)) for the project named after the current repo."""
+    repo = git_repo()
+    if not repo:
+        raise GhError("--init/--import/--update must be run inside a git repo with a github.com origin remote")
+    data = run_json("project", "list", *_owner(args), "--limit", "100")
+    return next((p for p in data["projects"] if p["title"] == repo[1]), None), repo
+
+
 def ensure_project(args):
     """Find the project named after the current repo, creating and linking it if missing.
 
     Returns (number, created).
     """
-    repo = git_repo()
-    if not repo:
-        raise GhError("--init/--import must be run inside a git repo with a github.com origin remote")
-    repo_owner, name = repo
-    data = run_json("project", "list", *_owner(args), "--limit", "100")
-    for p in data["projects"]:
-        if p["title"] == name:
-            print(f"Project exists: #{p['number']} {p['title']} {p['url']}")
-            return p["number"], False
+    p, (repo_owner, name) = find_project(args)
+    if p:
+        print(f"Project exists: #{p['number']} {p['title']} {p['url']}")
+        return p["number"], False
     args.title = name
     # gh only links a project to repos under the same owner
     args.repo = f"{repo_owner}/{name}" if args.owner == repo_owner else None
@@ -136,12 +140,16 @@ def _words(text):
     return {w[:-1] if w.endswith("s") and len(w) > 3 else w for w in words if w not in STOPWORDS and len(w) > 1}
 
 
-def similar(a, b, threshold=0.4):
-    """True when most of the shorter text's words appear in the other."""
+def overlap(a, b):
+    """Share of the shorter text's words that appear in the other (0..1)."""
     wa, wb = _words(a), _words(b)
     if not wa or not wb:
-        return False
-    return len(wa & wb) / min(len(wa), len(wb)) >= threshold
+        return 0.0
+    return len(wa & wb) / min(len(wa), len(wb))
+
+
+def similar(a, b, threshold=0.4):
+    return overlap(a, b) >= threshold
 
 
 def parse_changelog(text):
@@ -167,11 +175,12 @@ def _title(text, limit=100):
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
-def build_plan(changelog, todo):
+def build_plan(changelog, todo, linked=()):
     """Return ([(status, title, body)], [skipped TODO done texts]).
 
     Changelog entries become Done items (oldest first). TODO items follow, except
-    done ones that duplicate a changelog entry.
+    done ones that duplicate a changelog entry and any that duplicate a linked
+    issue/PR (`linked` is [(status, title, url)]; those are added separately).
     """
     entries = parse_changelog(changelog)
     plan, skipped = [], []
@@ -179,7 +188,8 @@ def build_plan(changelog, todo):
         title = _title(f"[{version}] {text}")
         plan.append(("Done", title, text if title != f"[{version}] {text}" else ""))
     for status, text in parse_todo(todo):
-        if status == "Done" and any(similar(text, e) for _, e in entries):
+        if any(similar(text, t) for _, t, _ in linked) or \
+                (status == "Done" and any(similar(text, e) for _, e in entries)):
             skipped.append(text)
             continue
         title = _title(text)
@@ -195,37 +205,145 @@ def _read(path):
         return ""
 
 
-def cmd_import(args):
-    """Seed an empty project from CHANGELOG.md (Done) and TODO.md (Todo / In Progress / Done)."""
-    changelog, todo = _read("CHANGELOG.md"), _read("TODO.md")
-    if not changelog and not todo:
-        raise GhError("neither CHANGELOG.md nor TODO.md found in the current directory")
-    plan, skipped = build_plan(changelog, todo)
-    if args.dry_run:
-        for status, title, _ in plan:
-            print(f"{status}\t{title}")
-        for text in skipped:
-            print(f"skipped (duplicate of changelog)\t{_title(text)}")
-        print(f"Dry run: {len(plan)} items would be imported")
-        return
-    number, _ = ensure_project(args)
-    if run_json("project", "item-list", str(number), *_owner(args), "--limit", "1")["items"] and not args.force:
-        print(f"Project #{number} already has items; nothing imported (use --force to import anyway)")
-        return
+def fetch_linked(repo):
+    """[(status, title, url)] for the repo's issues and PRs, mapped to project statuses.
+
+    Open issue -> Todo, closed issue -> Done, open PR -> In Progress, merged PR -> Done.
+    Closed-unmerged PRs are skipped. A failed lookup is a warning, not an error.
+    """
+    if not repo:
+        return []
+    slug = "/".join(repo)
+    states = {"issue": {"OPEN": "Todo", "CLOSED": "Done"},
+              "pr": {"OPEN": "In Progress", "MERGED": "Done"}}
+    linked = []
+    for kind, mapping in states.items():
+        try:
+            rows = json.loads(run(kind, "list", "--repo", slug, "--state", "all", "--limit", "200",
+                                  "--json", "number,title,state,url"))
+        except GhError as e:
+            print(f"warning: could not list {kind}s for {slug}: {e}", file=sys.stderr)
+            continue
+        linked += [(mapping[r["state"]], r["title"], r["url"]) for r in rows if r["state"] in mapping]
+    return linked
+
+
+def _status_setter(args, number, needed):
+    """Return set_status(item_id, status) for the project's Status field; error if an option is missing."""
     project_id = run_json("project", "view", str(number), *_owner(args))["id"]
     fields = run_json("project", "field-list", str(number), *_owner(args))["fields"]
     status_field = next((f for f in fields if f["name"] == "Status"), None)
     if not status_field:
         raise GhError("project has no Status field")
     options = {o["name"].lower(): o["id"] for o in status_field.get("options", [])}
-    missing = {st for st, _, _ in plan if st.lower() not in options}
+    missing = {st for st in needed if st.lower() not in options}
     if missing:
         raise GhError(f"Status field has no option(s): {', '.join(sorted(missing))}")
-    for status, title, body in plan:
-        item = run_json("project", "item-create", str(number), *_owner(args), "--title", title, "--body", body)
-        run("project", "item-edit", "--id", item["id"], "--project-id", project_id,
+
+    def set_status(item_id, status):
+        run("project", "item-edit", "--id", item_id, "--project-id", project_id,
             "--field-id", status_field["id"], "--single-select-option-id", options[status.lower()])
-    print(f"Imported {len(plan)} items into project #{number}")
+    return set_status
+
+
+def cmd_import(args):
+    """Seed an empty project from CHANGELOG.md and TODO.md (draft items) plus the repo's issues and PRs."""
+    changelog, todo = _read("CHANGELOG.md"), _read("TODO.md")
+    linked = fetch_linked(git_repo())
+    if not changelog and not todo and not linked:
+        raise GhError("nothing to import: no CHANGELOG.md or TODO.md in the current directory, and no issues or PRs")
+    plan, skipped = build_plan(changelog, todo, linked)
+    total = len(plan) + len(linked)
+    if args.dry_run:
+        for status, title, _ in plan:
+            print(f"{status}\t{title}")
+        for status, title, url in linked:
+            print(f"{status}\t{_title(title)}\t{url}")
+        for text in skipped:
+            print(f"skipped (duplicate)\t{_title(text)}")
+        print(f"Dry run: {total} items would be imported")
+        return
+    number, _ = ensure_project(args)
+    if run_json("project", "item-list", str(number), *_owner(args), "--limit", "1")["items"] and not args.force:
+        print(f"Project #{number} already has items; nothing imported (use --force to import anyway)")
+        return
+    set_status = _status_setter(args, number, [st for st, *_ in plan + linked])
+
+    for status, title, body in plan:
+        set_status(run_json("project", "item-create", str(number), *_owner(args),
+                            "--title", title, "--body", body)["id"], status)
+    for status, _, url in linked:
+        set_status(run_json("project", "item-add", str(number), *_owner(args), "--url", url)["id"], status)
+    print(f"Imported {total} items into project #{number}")
+
+
+RANK = {"Todo": 0, "In Progress": 1, "Done": 2}
+CHANGELOG_TITLE = re.compile(r"^\[(\d+\.\d+\.\d+|Unreleased)\] ")
+
+
+def cmd_update(args):
+    """Sync CHANGELOG.md and TODO.md into the existing project.
+
+    Adds items the project lacks and moves items forward (Todo -> In Progress -> Done)
+    when the files are ahead of the board. Never moves an item backwards.
+    """
+    changelog, todo = _read("CHANGELOG.md"), _read("TODO.md")
+    if not changelog and not todo:
+        raise GhError("nothing to update from: no CHANGELOG.md or TODO.md in the current directory")
+    plan, skipped = build_plan(changelog, todo)
+    project, _ = find_project(args)
+    if not project:
+        raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
+    number = project["number"]
+    existing = run_json("project", "item-list", str(number), *_owner(args), "--limit", "500")["items"]
+
+    # (status, title, body, is_changelog, can_add); skipped TODO items only advance a stale board copy
+    entries = [(st, t, body, bool(CHANGELOG_TITLE.match(t)), True) for st, t, body in plan]
+    entries += [("Done", _title(text), "", False, False) for text in skipped]
+
+    # An exact title match wins; otherwise a TODO item may fuzzy-match an unclaimed item at 0.75+
+    # overlap. Each board item matches at most one entry, so near-identical items are not conflated.
+    matched, claimed = {}, set()
+    for idx, (_, title, _, _, _) in enumerate(entries):
+        item = next((i for i in existing if i["id"] not in claimed and i["title"] == title), None)
+        if item:
+            matched[idx] = item
+            claimed.add(item["id"])
+    for idx, (_, title, body, is_changelog, _) in enumerate(entries):
+        if idx in matched or is_changelog:
+            continue
+        scored = [(overlap(body or title, i["title"]), i) for i in existing if i["id"] not in claimed]
+        score, item = max(scored, key=lambda p: p[0], default=(0, None))
+        if item and score >= 0.75:
+            matched[idx] = item
+            claimed.add(item["id"])
+
+    adds, moves = [], []
+    for idx, (status, title, body, _, can_add) in enumerate(entries):
+        item = matched.get(idx)
+        if item:
+            if RANK[status] > RANK.get(item.get("status"), -1):
+                moves.append((item, item.get("status") or "none", status, title))
+        elif can_add:
+            adds.append((status, title, body))
+
+    if args.dry_run:
+        for status, title, _ in adds:
+            print(f"add\t{status}\t{title}")
+        for _, old, new, title in moves:
+            print(f"move\t{old} -> {new}\t{title}")
+        print(f"Dry run: {len(adds)} to add, {len(moves)} to move in project #{number}")
+        return
+    if not adds and not moves:
+        print(f"Project #{number} is up to date")
+        return
+    set_status = _status_setter(args, number, [st for st, *_ in adds] + [new for _, _, new, _ in moves])
+    for status, title, body in adds:
+        set_status(run_json("project", "item-create", str(number), *_owner(args),
+                            "--title", title, "--body", body)["id"], status)
+    for item, _, new, _ in moves:
+        set_status(item["id"], new)
+    print(f"Updated project #{number}: {len(adds)} added, {len(moves)} moved")
 
 
 def cmd_view(args):
@@ -265,8 +383,10 @@ def build_parser():
     p.add_argument("--init", action="store_true",
                    help="create a project named after the current repo (linked to it) if none exists")
     p.add_argument("--import", dest="do_import", action="store_true",
-                   help="seed an empty project from CHANGELOG.md and TODO.md (creates the project if missing)")
-    p.add_argument("--dry-run", action="store_true", help="with --import: print what would be imported")
+                   help="seed an empty project from CHANGELOG.md, TODO.md and the repo's issues/PRs (creates the project if missing)")
+    p.add_argument("--update", action="store_true",
+                   help="sync CHANGELOG.md and TODO.md into the existing project: add missing items, move items forward")
+    p.add_argument("--dry-run", action="store_true", help="with --import/--update: print what would change")
     p.add_argument("--force", action="store_true", help="with --import: import even if the project has items")
     sub = p.add_subparsers(dest="cmd")
 
@@ -303,8 +423,10 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not (args.init or args.do_import or args.cmd):
-        parser.error("a command is required (or use --init / --import)")
+    if not (args.init or args.do_import or args.update or args.cmd):
+        parser.error("a command is required (or use --init / --import / --update)")
+    if args.init + args.do_import + args.update > 1:
+        parser.error("--init, --import and --update are mutually exclusive")
     try:
         check_auth()
         if not args.owner:
@@ -313,7 +435,7 @@ def main(argv=None):
                 print(f"Using owner: {args.owner} (from git origin)", file=sys.stderr)
             else:
                 args.owner = "@me"
-        (cmd_import if args.do_import else cmd_init if args.init else args.fn)(args)
+        (cmd_import if args.do_import else cmd_update if args.update else cmd_init if args.init else args.fn)(args)
     except GhError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

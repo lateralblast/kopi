@@ -7,6 +7,21 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-10
+
+### Added
+- `--update` flag (with `--dry-run`): sync `CHANGELOG.md` and `TODO.md` into an existing project by adding missing items and moving items forward (never backwards), without duplicating. `--init`, `--import` and `--update` are now mutually exclusive. Documented in `README.md`.
+
+## [0.2.0] - 2026-10-10
+
+### Changed
+- Verified `--import` against the real `kopi` project: 31 items created (20 Done, 10 Todo, 1 In Progress) with statuses applied correctly.
+
+## [0.1.9] - 2026-10-10
+
+### Added
+- `--import` now also adds the repo's issues and pull requests as linked items (open issue Todo, closed issue Done, open PR In Progress, merged PR Done), skipping TODO items that duplicate them. Documented in `README.md`.
+
 ## [0.1.8] - 2026-10-10
 
 ### Added

@@ -971,3 +971,59 @@ def test_set_errors(capsys):
     assert "no field 'Nope'" in err and "settable fields: Notes, Points, Due, Status, Sprint" in err
     assert "can't be set here" in err and "not a number" in err and "YYYY-MM-DD" in err
     assert "choose from: Todo, Done" in err and "exactly one of --value or --clear" in err and "boom" in err
+
+
+def test_list_todo_shows_project_todo_items(capsys):
+    rc, rj, run = _run_update(ORPHANS, argv=("--list", "todo"))
+    lines = capsys.readouterr().out.splitlines()
+    assert rc == 0 and [l.split("\t")[0] for l in lines] == [i["id"] for i in ORPHANS if i["status"] == "Todo"]
+    assert "O\tOld idea nobody wants" in lines
+    assert "OP" not in "".join(lines) and "OD" not in "".join(lines)  # not In Progress or Done
+
+
+def test_list_todo_json_and_unknown_kind(capsys):
+    _run_update(ORPHANS, argv=("--json", "--list", "todo"))
+    data = json.loads(capsys.readouterr().out)
+    assert {"id": "O", "status": "Todo", "title": "Old idea nobody wants"} in data
+    assert any(d.get("url") == "https://x/1" for d in data)  # linked items carry their URL
+    try:
+        cli.main(["--list", "nonsense"])
+    except SystemExit as e:
+        assert e.code == 2
+
+
+def test_list_todo_local_reads_only_open_entries_without_github(capsys):
+    with mock.patch("kopi.check_auth") as auth, mock.patch("kopi.run_json") as rj, mock.patch("kopi.run") as run, \
+         mock.patch("kopi._read", return_value=TODO):
+        rc = cli.main(["--list", "todo", "--local"])
+    assert rc == 0 and capsys.readouterr().out.splitlines() == ["Add a `--json` output flag."]  # not [~] or [x]
+    auth.assert_not_called(); rj.assert_not_called(); run.assert_not_called()
+    with mock.patch("kopi._read", return_value=TODO):
+        cli.main(["--json", "--list", "todo", "--local"])
+    assert json.loads(capsys.readouterr().out) == [{"status": "Todo", "title": "Add a `--json` output flag."}]
+
+
+def test_local_requires_list():
+    try:
+        cli.main(["--local", "--diff"])
+    except SystemExit as e:
+        assert e.code == 2
+
+
+def test_list_done_project_and_local(capsys):
+    _run_update(ORPHANS, argv=("--list", "done"))
+    ids = [l.split("\t")[0] for l in capsys.readouterr().out.splitlines()]
+    assert ids == [i["id"] for i in ORPHANS if i["status"] == "Done"] and "OD" in ids and "O" not in ids
+    with mock.patch("kopi._read", return_value=TODO):
+        assert cli.main(["--list", "done", "--local"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["Auth check before every command, with tests.", "Created the project."]
+
+
+def test_list_inprogress_project_and_local(capsys):
+    for kind in ("inprogress", "in-progress"):
+        _run_update(ORPHANS, argv=("--list", kind))
+        ids = [l.split("\t")[0] for l in capsys.readouterr().out.splitlines()]
+        assert ids == [i["id"] for i in ORPHANS if i["status"] == "In Progress"] and "OP" in ids, kind
+    with mock.patch("kopi._read", return_value=TODO):
+        assert cli.main(["--list", "inprogress", "--local"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["Run against real GitHub."]

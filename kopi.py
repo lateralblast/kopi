@@ -17,7 +17,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.4.8"
+__version__ = "0.5.1"
 
 
 class GhError(RuntimeError):
@@ -599,6 +599,37 @@ def _match_one(items, text, number, flag):
     return hits[0]
 
 
+LIST_KINDS = {"todo": "Todo", "inprogress": "In Progress", "in-progress": "In Progress", "done": "Done"}  # --list KIND -> board status (and the TODO.md checkbox it corresponds to)
+
+
+def cmd_list_kind(args):
+    """--list KIND: the project's items with that status; with --local, the matching entries in TODO.md.
+
+    `todo` is the Todo status (`[ ]` in TODO.md, not `[~]` in progress or `[x]` done); `inprogress` (or `in-progress`) is In Progress
+    (`[~]`); `done` is the Done status (`[x]` in TODO.md). The board's Done items include the changelog entries; TODO.md's do not.
+    """
+    status = LIST_KINDS[args.list]
+    if args.local:
+        rows = [{"status": st, "title": text} for st, text in parse_todo(_read("TODO.md")) if st == status]
+        if args.json:
+            emit(args, rows)
+            return
+        for r in rows:
+            print(r["title"])
+        return
+    project, _ = find_project(args)
+    if not project:
+        raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
+    items = run_json("project", "item-list", str(project["number"]), *_owner(args), "--limit", "500")["items"]
+    rows = [{"id": i["id"], "status": i.get("status"), "title": i["title"],
+             **({"url": u} if (u := _item_url(i)) else {})} for i in items if i.get("status") == status]
+    if args.json:
+        emit(args, rows)
+        return
+    for r in rows:
+        print(f"{r['id']}\t{r['title']}")
+
+
 def cmd_done(args):
     """Move one board item to Done. ITEM is an item id (PVTI_...) or text matching exactly one title.
 
@@ -945,6 +976,9 @@ def build_parser():
                         "uses the repo in PATH, default the current directory")
     p.add_argument("--json", action="store_true",
                    help="print the result as JSON on stdout (status messages are suppressed; warnings stay on stderr)")
+    p.add_argument("--list", choices=sorted(LIST_KINDS), metavar="KIND",
+                   help="list the project's items of one kind (todo, inprogress, done); with --local, list the matching entries in TODO.md instead")
+    p.add_argument("--local", action="store_true", help="with --list: read the local TODO.md instead of the project")
     p.add_argument("--done", metavar="ITEM",
                    help="move one board item to Done: ITEM is an item id or text matching exactly one title "
                         "(run from the repo directory)")
@@ -1003,13 +1037,16 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done]
+    modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done, args.list]
     if not (any(modes) or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done)")
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list)")
     if sum(map(bool, modes)) > 1:
-        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore and --done are mutually exclusive")
+        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done and --list are mutually exclusive")
+    if args.local and not args.list:
+        parser.error("--local only applies to --list")
     try:
-        path = next((m for m in modes if m and m is not args.done), None)  # --done's value is an item, not a path
+        # only these modes take a directory/file; --done's and --list's values are not paths
+        path = next((m for m in modes[:8] if m), None)
         args.only = None
         if path:
             if os.path.isfile(path) or os.path.basename(path) in SOURCE_FILES:
@@ -1025,6 +1062,9 @@ def main(argv=None):
             elif not os.path.isdir(path):
                 raise GhError(f"not a directory: {path}")
             os.chdir(path)
+        if args.local:  # --list KIND --local reads TODO.md only: no GitHub needed
+            cmd_list_kind(args)
+            return 0
         check_auth()
         if not args.owner:
             args.owner = git_owner()
@@ -1034,7 +1074,7 @@ def main(argv=None):
                 args.owner = "@me"
         handler = next((fn for on, fn in ((args.do_import, cmd_import), (args.update, cmd_update),
                                           (args.diff, cmd_diff), (args.archive, cmd_archive),
-                                          (args.dedupe, cmd_dedupe), (args.squash, cmd_squash), (args.restore, cmd_restore), (args.done, cmd_done),
+                                          (args.dedupe, cmd_dedupe), (args.squash, cmd_squash), (args.restore, cmd_restore), (args.done, cmd_done), (args.list, cmd_list_kind),
                                           (args.init, cmd_init)) if on), getattr(args, "fn", None))
         handler(args)
     except GhError as e:

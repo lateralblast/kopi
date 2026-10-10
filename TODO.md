@@ -9,6 +9,9 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] `--list inprogress` (project) and `--list inprogress --local` (TODO.md), with tests.
+- [x] `--list done` (project) and `--list done --local` (TODO.md), with tests.
+- [x] `--list todo` (project) and `--list todo --local` (TODO.md) flags, with tests; run live.
 - [x] Set item field values via the `graphql()` helper (`kopi set`), with tests; verified live.
 - [x] `--squash` flag: tick `TODO.md` entries that are Done on the board, with tests (live dry run found nothing to tick).
 - [x] Renamed `--squash` to `--dedupe` (older entries below keep the old name).

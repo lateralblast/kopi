@@ -7,6 +7,21 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-10
+
+### Added
+- `--list inprogress` (also `in-progress`): list the project's In Progress items, and with `--local` the `[~]` entries in the local `TODO.md`. Documented in `README.md`.
+
+## [0.5.0] - 2026-10-10
+
+### Added
+- `--list done`: list the project's Done items, and with `--local` the ticked (`[x]`) entries in the local `TODO.md`. Same output and `--json` shapes as `--list todo`. Documented in `README.md`.
+
+## [0.4.9] - 2026-10-10
+
+### Added
+- `--list KIND` flag (currently `todo` only): list the project's Todo items as `id<TAB>title`. With `--local`, list the open (`[ ]`) entries in the local `TODO.md` instead, without needing GitHub or a login. Both support `--json`. Documented in `README.md`.
+
 ## [0.4.8] - 2026-10-10
 
 ### Added

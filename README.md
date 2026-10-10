@@ -1,6 +1,6 @@
 # kopi
 
-Version: 0.4.8
+Version: 0.5.1
 
 Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -21,6 +21,7 @@ Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI
 ./kopi.py --diff [PATH]                    # show how the project differs from the files/issues/PRs
 ./kopi.py --archive [PATH] [--id ID | --match TEXT]  # archive one item (see below)
 ./kopi.py --archive [PATH] [--dry-run] [--force]  # archive open board drafts no longer in TODO.md
+./kopi.py --list todo|inprogress|done [--local]  # list the project's items by status (or the matching entries in TODO.md)
 ./kopi.py --done ITEM [--dry-run]               # move one board item to Done (ITEM: id or title text)
 ./kopi.py --restore [PATH] [--dry-run] [--id ID]  # unarchive items that --archive archived
 ./kopi.py --squash [PATH] [--dry-run]             # tick TODO.md entries that are Done on the board
@@ -41,7 +42,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `create`: `{number, url, linked_repo}`; `--init`: `{number, created}`; `delete`: `{deleted}`; `add`: `{added}`.
 - `--import` and `--update`: `{project, dry_run, added: [{status, title, url?}], moved: [{title, from, to}]}` (`--import` reports `items`, `skipped` on a dry run and `imported` otherwise).
 - `--diff`: `{project, files_only, github_only, board_only, duplicates, behind, ahead}`.
-- `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--done`: `{project, dry_run, moved: [{title, from, to}]}`; `--squash`: `{project, dry_run, ticked: [{title, from}]}`; `set`: `{project, dry_run, item, field, value}`; `--dedupe`: `{project, dry_run, deleted}`.
+- `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--done`: `{project, dry_run, moved: [{title, from, to}]}`; `--squash`: `{project, dry_run, ticked: [{title, from}]}`; `set`: `{project, dry_run, item, field, value}`; `--list`: an array of items, as above; `--dedupe`: `{project, dry_run, deleted}`.
 
 ## Initialising a project for a repo
 
@@ -122,6 +123,14 @@ Give `--archive` an item to archive just that one, ignoring the files and the or
 - Entries are matched to board items exactly as `--update` does (identical title, or 75%+ shared words). Only `TODO.md` is read: issues, PRs and the changelog are ignored.
 - Open board items (Todo, In Progress) never cause a tick, and nothing is ever un-ticked.
 - Pairs well with `--done`: mark an item done on the board, then `--squash` ticks it in the file.
+
+## Listing items (`--list`)
+
+`kopi --list KIND` lists the project's items of one kind, one line per item: the item id, a tab, then the title. The ids can be passed to `--done`, `--archive --id` and `set`. The kinds are `todo` (Todo status), `inprogress` (In Progress status; `in-progress` also works) and `done` (Done status). Linked issues/PRs are included when their status matches. `--list done` also lists the changelog entries, since those are Done items on the board.
+
+Add `--local` to list entries from the local `TODO.md` instead, one title per line: `--list todo --local` gives the open entries (the `[ ]` checkbox, matching the Todo status on the board), `--list inprogress --local` the `[~]` ones and `--list done --local` the ticked ones (`[x]`). The changelog is not read. `--local` reads the file only, so it needs no GitHub access, no login and no network. It reads `TODO.md` in the current directory.
+
+With `--json`, both forms print an array: `{id, status, title, url?}` for the project and `{status, title}` for the file. Comparing the two lists is a quick way to see where the board and the file disagree; `--diff` does that in full.
 
 ## Setting field values (`set`)
 

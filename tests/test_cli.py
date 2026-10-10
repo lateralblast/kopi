@@ -1757,3 +1757,163 @@ def test_rollup_repos_from_config_and_exclusive(tmp_path, monkeypatch, capsys):
     assert [p["number"] for p in json.loads(capsys.readouterr().out)["projects"]] == [2]
     with pytest.raises(SystemExit):
         cli.main(["--rollup", "--update"])
+
+
+PROMOTE_BOARD = [
+    {"id": "D1", "title": "Add dark mode", "status": "Todo", "content": {"type": "DraftIssue"}},
+    {"id": "D2", "title": "Add dark theme tweaks", "status": "In Progress", "content": {"type": "DraftIssue"}},
+    {"id": "I1", "title": "An issue", "status": "Todo",
+     "content": {"type": "Issue", "number": 3, "repository": "o/kopi", "url": "https://github.com/o/kopi/issues/3"}},
+]
+
+
+def _promote(argv):
+    calls = []
+
+    def fake_graphql(query, **variables):
+        calls.append((query, variables))
+        if "convertProjectV2DraftIssueItemToIssue" in query:
+            return {"data": {"convertProjectV2DraftIssueItemToIssue": {"item": {"id": variables["item"], "content": {
+                "number": 12, "title": "Add dark mode", "url": "https://github.com/lateralblast/kopi/issues/12"}}}}}
+        return {"data": {"repository": {"id": "REPO_NODE"}}}
+    with mock.patch("kopi.graphql", side_effect=fake_graphql):
+        rc, rj, run = _run_update(PROMOTE_BOARD, argv=argv)
+    return rc, calls, run
+
+
+def test_promote_converts_a_draft_in_place(capsys):
+    rc, calls, run = _promote(("--promote", "dark mode"))
+    assert rc == 0 and not run.called                       # no `gh project` writes: the mutation does it all
+    repo_call, mutation_call = calls
+    assert repo_call[1] == {"owner": "lateralblast", "name": "kopi"}
+    assert mutation_call[1] == {"item": "D1", "repo": "REPO_NODE"}
+    assert "Promoted to lateralblast/kopi#12: https://github.com/lateralblast/kopi/issues/12" in capsys.readouterr().out
+    rc, calls, _ = _promote(("--promote", "D2"))             # by item id
+    assert rc == 0 and calls[1][1]["item"] == "D2"
+
+
+def test_promote_dry_run_json_and_errors(capsys):
+    rc, calls, _ = _promote(("--json", "--promote", "D1", "--dry-run"))
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and calls == [] and data["dry_run"] is True and data["promoted"] == [{"title": "Add dark mode", "id": "D1"}]
+    rc, calls, _ = _promote(("--json", "--promote", "D1"))
+    assert json.loads(capsys.readouterr().out)["promoted"][0] == {
+        "title": "Add dark mode", "id": "D1", "number": 12, "url": "https://github.com/lateralblast/kopi/issues/12"}
+    assert _promote(("--promote", "An issue"))[0] == 1       # already an issue: only drafts can be promoted
+    assert "already an issue (https://github.com/o/kopi/issues/3)" in capsys.readouterr().err
+    assert _promote(("--promote", "Add dark"))[0] == 1       # two drafts match
+    assert _promote(("--promote", "nothing like it"))[0] == 1
+    assert "matched 2 items" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        cli.main(["--promote", "D1", "--update"])
+
+
+BULK_BOARD = [
+    {"id": "T1", "title": "Add dark mode", "status": "Todo", "content": {"type": "DraftIssue"}},
+    {"id": "P1", "title": "Write the docs", "status": "In Progress", "content": {"type": "DraftIssue"}},
+    {"id": "T2", "title": "Fix the login bug", "status": "Todo", "content": {"type": "DraftIssue"}},
+    {"id": "DN", "title": "Already shipped", "status": "Done", "content": {"type": "DraftIssue"}},
+    {"id": "CH", "title": "[0.1.0] A changelog entry", "status": "Todo", "content": {"type": "DraftIssue"}},
+    {"id": "CO", "title": "[code] handle rate limits", "status": "Todo", "content": {"type": "DraftIssue"}},
+    {"id": "RE", "title": "[release] v1.0.0", "status": "In Progress", "content": {"type": "DraftIssue"}},
+    {"id": "IS", "title": "An issue", "status": "Todo", "content": {"type": "Issue", "number": 3, "repository": "o/kopi"}},
+    {"id": "NS", "title": "No status draft", "status": None, "content": {"type": "DraftIssue"}},
+]
+
+
+def _promote_all(argv, fail=()):
+    calls = []
+
+    def fake_graphql(query, **variables):
+        if "convertProjectV2DraftIssueItemToIssue" not in query:
+            return {"data": {"repository": {"id": "REPO_NODE"}}}
+        if variables["item"] in fail:
+            raise cli.GhError("rate limited")
+        calls.append(variables["item"])
+        n = 10 + len(calls)
+        return {"data": {"convertProjectV2DraftIssueItemToIssue": {"item": {"content": {
+            "number": n, "title": "t", "url": f"https://github.com/lateralblast/kopi/issues/{n}"}}}}}
+    with mock.patch("kopi.graphql", side_effect=fake_graphql):
+        rc, rj, run = _run_update(BULK_BOARD, argv=argv)
+    return rc, calls
+
+
+def test_promotable_skips_history_noise_done_and_linked():
+    assert [i["id"] for i in cli.promotable(BULK_BOARD)] == ["T1", "P1", "T2"]
+    assert [i["id"] for i in cli.promotable(BULK_BOARD, "todo")] == ["T1", "T2"]
+    assert [i["id"] for i in cli.promotable(BULK_BOARD, "inprogress")] == ["P1"]
+
+
+def test_promote_all_needs_yes_and_dry_run_lists(capsys):
+    rc, calls = _promote_all(("--promote-all", "--dry-run"))
+    out = capsys.readouterr().out
+    assert rc == 0 and calls == [] and "Dry run: 3 drafts would become issues" in out
+    rc, calls = _promote_all(("--promote-all",))                 # no --yes: lists, then refuses
+    cap = capsys.readouterr()
+    assert rc == 1 and calls == [] and "promote\tTodo\tAdd dark mode" in cap.out and "re-run with --yes" in cap.err
+    with pytest.raises(SystemExit):
+        cli.main(["--yes", "--update"])                          # --yes belongs to --promote-all only
+
+
+def test_promote_all_converts_each_draft_with_a_pause(capsys):
+    with mock.patch("kopi.time.sleep") as sleep:
+        rc, calls = _promote_all(("--json", "--promote-all", "--yes"))
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and calls == ["T1", "P1", "T2"]
+    assert [p["number"] for p in data["promoted"]] == [11, 12, 13] and data["failed"] == []
+    assert sleep.call_count == 2                                 # between issues, not before the first
+    rc, calls = _promote_all(("--promote-all", "todo", "--yes"))
+    assert calls == ["T1", "T2"]
+    assert "Promoted 2 drafts to issues in lateralblast/kopi" in capsys.readouterr().out
+
+
+def test_promote_all_continues_past_a_failure(capsys):
+    rc, calls = _promote_all(("--json", "--promote-all", "--yes"), fail={"P1"})
+    cap = capsys.readouterr()
+    data = json.loads(cap.out)
+    assert rc == 1 and calls == ["T1", "T2"]                      # the rest still went through
+    assert [f["id"] for f in data["failed"]] == ["P1"] and "rate limited" in data["failed"][0]["error"]
+    assert "could not promote 'Write the docs'" in cap.err
+
+
+def test_promote_all_nothing_to_do(capsys):
+    with mock.patch("kopi.graphql") as gql:
+        rc, _, _ = _run_update([{"id": "D", "title": "Done thing", "status": "Done", "content": {"type": "DraftIssue"}}],
+                               argv=("--promote-all", "--yes"))
+    assert rc == 0 and not gql.called and "Nothing to promote" in capsys.readouterr().out
+
+
+def test_squash_refreshes_issues_md_when_the_project_has_issues(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert _run_update(ISSUE_BOARD, argv=("--squash", "--dry-run"))[0] == 0
+    assert "Dry run: ISSUES.md would be updated (3 issues)" in capsys.readouterr().out
+    assert not (tmp_path / "ISSUES.md").exists()                       # a dry run writes nothing
+    assert _run_update(ISSUE_BOARD, argv=("--squash",))[0] == 0
+    assert "ISSUES.md updated (3 issues)" in capsys.readouterr().out
+    text = (tmp_path / "ISSUES.md").read_text()                        # created, same content as --export issues
+    assert text.startswith("<!-- Generated by kopi --export issues") and "[#3](https://github.com/o/kopi/issues/3) Login fails (bug)" in text
+    assert "A pull request" not in text and "A draft" not in text
+    _run_update(ISSUE_BOARD, argv=("--squash",), issues_md=text)
+    assert "ISSUES.md is up to date (3 issues)" in capsys.readouterr().out
+    changed = [dict(i) for i in ISSUE_BOARD if i["id"] != "I3"]       # an issue left the board: the file follows
+    _run_update(changed, argv=("--squash",), issues_md=text)
+    assert "ISSUES.md updated (2 issues)" in capsys.readouterr().out and "Fix typo" not in (tmp_path / "ISSUES.md").read_text()
+
+
+def test_squash_leaves_issues_md_alone_without_issues_or_when_hand_written(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _run_update(SQUASH_BOARD, argv=("--json", "--squash"))             # no issue items on this board
+    assert json.loads(capsys.readouterr().out)["issues"] is None and not (tmp_path / "ISSUES.md").exists()
+    _run_update(ISSUE_BOARD, argv=("--squash",), issues_md="# My own notes\n")
+    assert "ISSUES.md skipped: not generated by kopi" in capsys.readouterr().out
+    assert not (tmp_path / "ISSUES.md").exists()                       # not an error, and not overwritten
+    _run_update(ISSUE_BOARD, argv=("--squash", "--force"), issues_md="# My own notes\n")
+    assert (tmp_path / "ISSUES.md").read_text().startswith("<!-- Generated by kopi")
+
+
+def test_squash_and_sync_json_report_the_issues_file(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _run_update(ISSUE_BOARD, argv=("--json", "--squash", "--dry-run"))
+    assert json.loads(capsys.readouterr().out)["issues"] == {"file": "ISSUES.md", "changed": True, "skipped": None, "count": 3}
+    _run_update(ISSUE_BOARD, argv=("--json", "--sync", "--dry-run"))
+    assert json.loads(capsys.readouterr().out)["squash"]["issues"]["count"] == 3

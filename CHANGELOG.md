@@ -7,6 +7,26 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-11
+
+### Added
+- `--squash` (and so `--sync`) now also refreshes `ISSUES.md` when the project has issue items, rewriting it exactly as `--export issues` would (and creating it if it is missing), so the local issue list follows the board. A project without issues leaves `ISSUES.md` alone, a hand-written `ISSUES.md` is skipped with a note unless `--force` is given, and `--dry-run` writes nothing. `--squash --json` reports `issues: {file, changed, skipped, count}` (or `null`). Documented in `README.md`.
+
+## [0.6.9] - 2026-10-11
+
+### Added
+- `--promote-all [todo|inprogress]` (with `--dry-run`, `--yes`, `--json`): turn every open draft board item (or just the Todo or In Progress ones) into a real issue in the current repo, the bulk form of `--promote`. Changelog entries, `[code]` / `[release]` items, Done items, items with no status and anything already an issue or PR are skipped. Because it creates many public issues at once, a real run needs `--yes`; without it, or with `--dry-run`, it only lists them. Items are converted a second apart, a failure is reported and skipped (the exit status is 1 if any failed). Documented in `README.md`.
+
+## [0.6.8] - 2026-10-11
+
+### Changed
+- Verified `--promote` live on the `kopi` project: a throwaway draft with a body and an In Progress status was converted to issue #2 in place. The board item kept its id, status and body, became a linked `Issue` item, and `--diff` recognised it. The test issue and item were deleted afterwards, leaving the board at its original 64 items.
+
+## [0.6.7] - 2026-10-11
+
+### Added
+- `--promote ITEM` (with `--dry-run`, `--json`): turn one draft board item into a real issue in the current repo. `ITEM` is an item id or text matching exactly one title. The draft is converted in place with GitHub's `convertProjectV2DraftIssueItemToIssue`, so it keeps its place, status and fields and becomes a linked issue item with the same title. Only drafts can be promoted; an item that is already an issue or PR is an error. `TODO.md` is not touched. Documented in `README.md`.
+
 ## [0.6.6] - 2026-10-10
 
 ### Added

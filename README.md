@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.6.6
+Version: 0.7.0
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -14,7 +14,7 @@ Version: 0.6.6
 - [Projects](#projects): [list](#listing-projects), [`--init`](#initialising-a-project-for-a-repo), [`set`](#setting-field-values-set)
 - [Files to board](#files-to-board): [`--import`](#importing-changelogmd-todomd-issues-and-prs), [`--update`](#updating-the-project-from-changelogmd-todomd-issues-and-prs), [`--diff`](#comparing-the-project-with-the-files---diff), [`--sync`](#syncing-both-ways---sync), [extra sources](#extra-sources---code-comments---releases), [single files](#importing-or-updating-a-single-file)
 - [Board to files](#board-to-files): [`--export`](#exporting-board-items-to-todomd---export), [`--squash`](#ticking-todomd-from-the-board---squash), [issues and PRs](#issues-and-prs)
-- [Working on items](#working-on-items): [`--list`](#listing-items---list), [`--done` / `--start` / `--move`](#moving-items---done---start---move), [`--close`](#closing-an-issue---close), [`--archive`](#archiving-stale-items---archive), [`--restore`](#restoring-archived-items---restore), [`--dedupe`](#removing-duplicates---dedupe)
+- [Working on items](#working-on-items): [`--list`](#listing-items---list), [`--done` / `--start` / `--move`](#moving-items---done---start---move), [`--promote`](#promoting-drafts-to-issues---promote---promote-all), [`--close`](#closing-an-issue---close), [`--archive`](#archiving-stale-items---archive), [`--restore`](#restoring-archived-items---restore), [`--dedupe`](#removing-duplicates---dedupe)
 - [Reports](#reports): [`--report`](#progress-report---report), [`--rollup`](#roll-up-across-projects---rollup)
 
 ## Quick start
@@ -54,7 +54,7 @@ cd ~/code/my-repo
 ./kopi.py --export todo|inprogress|done [--dry-run]       # add the board's items to TODO.md as [ ] / [~] / [x] entries
 ./kopi.py --export issues [--dry-run] [--force]           # write the board's issues to ISSUES.md
 ./kopi.py --export prs [--dry-run] [--force]              # write the board's pull requests to PRS.md
-./kopi.py --squash [PATH] [--dry-run]                     # tick TODO.md entries that are Done on the board
+./kopi.py --squash [PATH] [--dry-run] [--force]           # tick TODO.md entries that are Done on the board; refresh ISSUES.md
 ./kopi.py --import issues [--dry-run]                     # create a GitHub issue for each ISSUES.md entry that has none
 
 # Working on items
@@ -64,6 +64,8 @@ cd ~/code/my-repo
 ./kopi.py --start ITEM [--dry-run]                        # move one board item to In Progress
 ./kopi.py --move ITEM STATUS [--dry-run]                  # move one board item to any Status (Todo, In Progress, Done, ...)
 ./kopi.py --close ISSUE [--dry-run]                       # close a GitHub issue (ISSUE: number, URL or title text)
+./kopi.py --promote ITEM [--dry-run]                      # turn one draft board item into a real issue
+./kopi.py --promote-all [todo|inprogress] [--dry-run|--yes]  # ...or every open draft (needs --yes)
 ./kopi.py --archive [PATH] [--dry-run] [--force]          # archive open board drafts no longer in TODO.md
 ./kopi.py --archive [PATH] [--id ID | --match TEXT]       # archive one item
 ./kopi.py --restore [PATH] [--dry-run] [--id ID | --all]  # unarchive items that --archive archived (or all archived)
@@ -147,9 +149,9 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--diff`: `{project, files_only, github_only, board_only, duplicates, behind, ahead, in_sync}`.
 - `--sync`: `{project, dry_run, update, squash}` (the `--update` and `--squash` results).
 - `--export todo|inprogress|done`: `{project, dry_run, file, added, already_present}`; `--export issues` / `prs`: `{project, dry_run, file, changed, issues|prs}`; `--import issues`: `{repo, dry_run, created: [{title, url?, closed, labels}], existing, unknown_labels}`.
-- `--squash`: `{project, dry_run, ticked: [{title, from}]}`.
+- `--squash`: `{project, dry_run, ticked: [{title, from}], issues: {file, changed, skipped, count} | null}`.
 - `--list`: an array of items, as under [`--list`](#listing-items---list).
-- `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--close`: `{repo, dry_run, closed: [{number, title, url}]}`.
+- `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--close`: `{repo, dry_run, closed: [{number, title, url}]}`; `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}]}`; `--promote-all`: the same plus `failed: [{title, id, error}]`.
 - `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--dedupe`: `{project, dry_run, deleted}`.
 - `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
 
@@ -215,7 +217,7 @@ Add `--check` to use it as a gate in CI or a pre-commit hook: the exit status is
 
 ### Syncing both ways (`--sync`)
 
-`kopi --sync [PATH]` runs `--update` and then `--squash`: anything in `CHANGELOG.md`, `TODO.md`, issues and PRs that the board lacks (or is behind on) goes into the board, then `TODO.md` entries that are Done on the board are ticked. Use `--dry-run` to preview both steps; the squash step is then planned from the board as it is now, before `--update`'s changes would land. With `--json` the two results are one document, `{project, dry_run, update, squash}`. It takes a directory like `--update`, but not a single file. The `--export` modes stay separate because they write new entries and files; run them yourself when you want them.
+`kopi --sync [PATH]` runs `--update` and then `--squash`: anything in `CHANGELOG.md`, `TODO.md`, issues and PRs that the board lacks (or is behind on) goes into the board, then `TODO.md` entries that are Done on the board are ticked and `ISSUES.md` is refreshed if the project has issues. Use `--dry-run` to preview both steps; the squash step is then planned from the board as it is now, before `--update`'s changes would land. With `--json` the two results are one document, `{project, dry_run, update, squash}`. It takes a directory like `--update`, but not a single file. The `--export` modes stay separate because they write new entries and files; run them yourself when you want them.
 
 ### Extra sources (`--code-comments`, `--releases`)
 
@@ -256,16 +258,17 @@ By default `--import` and `--update` process both `CHANGELOG.md` and `TODO.md`, 
 
 ### Ticking TODO.md from the board (`--squash`)
 
-`kopi --squash` is the reverse of `--update`: it looks at the project's **Done** items and, for any whose `TODO.md` entry is still `[ ]` or `[~]`, ticks it to `[x]` in the local file. Use `--dry-run` to see which entries would change. It takes an optional directory like the other modes.
+`kopi --squash` is the reverse of `--update`: it looks at the project's **Done** items and, for any whose `TODO.md` entry is still `[ ]` or `[~]`, ticks it to `[x]` in the local file. It also refreshes `ISSUES.md` when the project has issues (see below). Use `--dry-run` to see which entries would change. It takes an optional directory like the other modes.
 
 - It edits `TODO.md` only; the board is not touched. It does not commit, and it ticks the entry in place rather than moving it to a Done section, so move it yourself if you keep a separate Done list.
 - Entries are matched to board items exactly as `--update` does (identical title, or 75%+ shared words). Only `TODO.md` is read: issues, PRs and the changelog are ignored.
 - Open board items (Todo, In Progress) never cause a tick, and nothing is ever un-ticked.
 - Pairs well with `--done`: mark an item done on the board, then `--squash` ticks it in the file.
+- **ISSUES.md.** If the project has any issue items, `--squash` rewrites `ISSUES.md` exactly as [`--export issues`](#issues-and-prs) would, so the local issue list follows the board (an issue closed and moved to Done, a new one added, one removed). It creates the file if it is missing. A project with no issues leaves `ISSUES.md` alone, and a hand-written `ISSUES.md` (one without kopi's marker line) is skipped with a note rather than overwritten, unless you pass `--force`. `--dry-run` reports what would change but writes nothing. `--sync` runs `--squash`, so it does this too.
 
 ### Issues and PRs
 
-**Exporting issues to ISSUES.md (`--export issues`).** `kopi --export issues` writes the project's **issue** items to `ISSUES.md` in the current directory, as a snapshot grouped by board status (Todo, In Progress, Done, then No status), one bullet per issue: `- [#3](url) Title (labels)`. The reference includes the repository (`owner/repo#3`) when the board holds issues from more than one repo. Pull requests and draft items are not included, and the board's status is used, not the issue's open/closed state on GitHub.
+**Exporting issues to ISSUES.md (`--export issues`).** `kopi --export issues` creates or updates `ISSUES.md` (`--squash` and `--sync` do the same whenever the project has issues). It writes the project's **issue** items to `ISSUES.md` in the current directory, as a snapshot grouped by board status (Todo, In Progress, Done, then No status), one bullet per issue: `- [#3](url) Title (labels)`. The reference includes the repository (`owner/repo#3`) when the board holds issues from more than one repo. Pull requests and draft items are not included, and the board's status is used, not the issue's open/closed state on GitHub.
 
 - Unlike the `TODO.md` exports, which only add what's missing, this **replaces** `ISSUES.md` each time, so it is always an exact picture of the board. The file starts with a comment line saying so. A file without that line (one you wrote by hand) is never overwritten unless you pass `--force`. Delete the comment line yourself to take over a generated file.
 - If nothing changed the file is left alone ("ISSUES.md is up to date"). `--dry-run` lists the issues without writing.
@@ -301,6 +304,20 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 - Unlike `--update`, which only moves items forward, these may move an item **backwards**, for example `kopi --move "dark mode" Todo` to reopen a Done item.
 - They change the board only. `TODO.md`, `CHANGELOG.md` and any linked issue or PR are not touched, so tick the item in `TODO.md` too (`--squash` does it), or the next `--update` will see the board ahead of the file (shown as `ahead` by `--diff`, never moved back).
 - Run them from the repo's directory (the project is found from the git `origin`); they take no path argument because their value is the item.
+
+### Promoting drafts to issues (`--promote`, `--promote-all`)
+
+`kopi --promote ITEM` turns one **draft** board item into a real issue in the current repo (found from the git `origin`). `ITEM` is an item id or text matching exactly one title, as for `--done`. Use `--dry-run` to see what would happen.
+
+- The draft is converted **in place** (GitHub's `convertProjectV2DraftIssueItemToIssue`), so it stays on the board with its status and fields and becomes a linked issue item with the same title. The next `--update` then treats it like any other issue: it moves to Done when the issue is closed, and a `TODO.md` entry with the same title is left to the issue rather than re-added.
+- Only drafts can be promoted. An item that is already an issue or pull request is an error naming it.
+- This creates a real issue, visible to everyone who can see the repo, so it is never done automatically. `TODO.md` is not changed.
+
+`kopi --promote-all` does the same for every open draft at once, or just the `todo` or `inprogress` ones (`kopi --promote-all todo`):
+
+- It promotes Todo and In Progress drafts only. Changelog entries (`[version] ...`), the `[code]` and `[release]` items from the [extra sources](#extra-sources---code-comments---releases), Done items, items with no status and anything already an issue or PR are skipped.
+- Because it creates many public issues in one go, a real run needs **`--yes`**. Without it, or with `--dry-run`, it only lists what would be promoted (and without `--yes` it then exits 1 saying so). Look at the list first: draft items you made by hand count too.
+- Items are converted one at a time, about a second apart. If one fails it is reported on stderr (and under `failed` in `--json`) and the rest carry on; the exit status is 1 if any failed. Items already promoted stay promoted, so re-running only retries what is still a draft.
 
 ### Closing an issue (`--close`)
 

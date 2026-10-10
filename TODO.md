@@ -4,9 +4,13 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Open
 
+- [ ] Optionally annotate the `TODO.md` entry with the new issue number (`(#12)`) after `--promote`.
 
 ## Done
 
+- [x] `--squash` / `--sync` also refresh `ISSUES.md` when the project has issues (`--export issues` already created and updated it), with tests.
+- [x] `--promote-all` bulk promotion of open drafts to issues (needs `--yes`), with tests.
+- [x] Verified `--promote` live on the `kopi` board: the draft became issue #2 in place (same item id, In Progress status and body kept); the test issue and item were then deleted.
 - [x] `--rollup` multi-repo status roll-up (directories, `repos` in `.kopi.toml`, or all open projects under the owner), with tests; run live.
 - [x] `--report` progress summary (text, markdown and JSON), with tests; run live.
 - [x] Opt-in `--code-comments` and `--releases` sources (and `[sources]` / `[comments]` settings), with tests.

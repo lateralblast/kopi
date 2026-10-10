@@ -7,6 +7,16 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-10-10
+
+### Added
+- `--restore --all`: unarchive every archived item GitHub reports for the project, including ones archived in the web UI, on another machine, or before kopi kept a log. Found by paging through the GraphQL items connection, which (unlike `gh project item-list`) returns archived items. Plain `--restore` still restores only what `--archive` logged. Documented in `README.md`.
+
+## [0.5.7] - 2026-10-10
+
+### Added
+- `--export prs` (with `--dry-run`, `--force`): write the project's pull request items to `PRS.md`, grouped by board status, the same way `--export issues` writes `ISSUES.md`. `--json` reports the rows under `prs`. Documented in `README.md`.
+
 ## [0.5.6] - 2026-10-10
 
 ### Added

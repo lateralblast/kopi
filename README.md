@@ -1,6 +1,6 @@
 # kopi
 
-Version: 0.5.6
+Version: 0.5.8
 
 Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -24,9 +24,10 @@ Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI
 ./kopi.py --archive [PATH] [--dry-run] [--force]  # archive open board drafts no longer in TODO.md
 ./kopi.py --export todo|inprogress|done [--dry-run]  # add the board's items to TODO.md as [ ] / [~] / [x] entries
 ./kopi.py --export issues [--dry-run] [--force]      # write the board's issues to ISSUES.md
+./kopi.py --export prs [--dry-run] [--force]         # write the board's pull requests to PRS.md
 ./kopi.py --list todo|inprogress|done [--local]  # list the project's items by status (or the matching entries in TODO.md)
 ./kopi.py --done ITEM [--dry-run]               # move one board item to Done (ITEM: id or title text)
-./kopi.py --restore [PATH] [--dry-run] [--id ID]  # unarchive items that --archive archived
+./kopi.py --restore [PATH] [--dry-run] [--id ID | --all]  # unarchive items that --archive archived (or all archived)
 ./kopi.py --squash [PATH] [--dry-run]             # tick TODO.md entries that are Done on the board
 ./kopi.py --dedupe [PATH] [--dry-run]             # delete duplicate board items
 ./kopi.py --json <command or mode>        # print the result as JSON (see below)
@@ -147,6 +148,10 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 - Linked issues and PRs are written as `title (url)`. A later `--update` leaves them to the issue/PR rather than adding a duplicate draft.
 - Running it twice adds nothing the second time. With `--json` it prints `{project, dry_run, file, added, already_present}`.
 
+### Exporting pull requests to PRS.md (`--export prs`)
+
+`kopi --export prs` works exactly like `--export issues` but for the board's **pull request** items, writing `PRS.md` (`- [#8](url) Title`, grouped by board status). The same rules apply: the file is replaced each time, a `PRS.md` kopi did not generate needs `--force`, and `--json` prints `{project, dry_run, file, changed, prs}`. There is no `--import prs`: a pull request needs a branch and commits, so it cannot be created from a line of text.
+
 ### Importing issues from ISSUES.md (`--import issues`)
 
 `kopi --import issues` reads `ISSUES.md` in the current directory and creates a GitHub issue (in the repo's `origin`) for each bullet that has no issue yet. It accepts the lines `--export issues` writes (`- [#3](url) Title (labels)`) and hand-written ones (`- Title`, `- [ ] Title`).
@@ -183,9 +188,9 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 
 `kopi --restore` unarchives the items that `kopi --archive` archived in this project, with their status intact. Use `--dry-run` to see them first.
 
-GitHub's API cannot list archived items, so `--archive` records each item it archives (owner, project, item id, title, status, date) in a small local log, `~/.config/kopi/archived.json` (override the location with the `KOPI_STATE` environment variable), and `--restore` reads it. Restored items are removed from the log. If an item can't be restored (for example it was deleted), `kopi` warns and keeps its entry.
+`gh project item-list` hides archived items, so `--archive` records each item it archives (owner, project, item id, title, status, date) in a small local log, `~/.config/kopi/archived.json` (override the location with the `KOPI_STATE` environment variable), and `--restore` reads it. Restored items are removed from the log. If an item can't be restored (for example it was deleted), `kopi` warns and keeps its entry.
 
-- Items archived by hand, on another machine, or before this feature existed are not in the log. Restore them by id with `kopi --restore --id ITEM_ID` (repeatable), using the `PVTI_...` item id (the `id` field from `kopi items`, which is how `--archive` identifies items).
+- Items archived by hand, on another machine, or before this feature existed are not in the log. `kopi --restore --all` restores every archived item GitHub reports for the project (found through the GraphQL API, which lists archived items; use `--dry-run` first). Or restore specific ones by id with `kopi --restore --id ITEM_ID` (repeatable), using the `PVTI_...` item id (the `id` field from `kopi items`, which is how `--archive` identifies items).
 - Only items from the current project are restored, even if the log holds others.
 - `--restore` only undoes an archive. Run `--update` afterwards if you want the board brought back in line with the files, but note that `--archive` would archive a restored orphan again.
 

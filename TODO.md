@@ -5,10 +5,11 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 ## Open
 
 - [ ] Consider opt-in import of TODO/FIXME code comments and GitHub releases/tags (notes in [RESEARCH.md](RESEARCH.md)).
-- [ ] Make `--restore` find items archived outside kopi (GitHub's API can't list archived items; only the local log and `--id` work today).
 
 ## Done
 
+- [x] `--restore --all` finds items archived outside kopi via GraphQL (`isArchived`), with tests; probed live.
+- [x] `--export prs` to a local `PRS.md`, with tests.
 - [x] `--import issues` creates GitHub issues from `ISSUES.md` where none exist, with tests.
 - [x] `--export todo|inprogress|done` always creates a missing `TODO.md` from a template, with tests (dry run checked live).
 - [x] `--export issues` to a local `ISSUES.md`, with tests (dry run checked live).

@@ -5,10 +5,14 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 ## Open
 
 - [ ] Consider opt-in import of TODO/FIXME code comments and GitHub releases/tags (notes in [RESEARCH.md](RESEARCH.md)).
+- [ ] Make `--restore` find items archived outside kopi (GitHub's API can't list archived items; only the local log and `--id` work today).
 - [ ] Set item field values (status, etc.) via the `graphql()` helper.
 
 ## Done
 
+- [x] `--done` flag to move a single item to Done by id or matching text, with tests; verified live.
+- [x] Archive an individual item (`--archive --id` / `--match`), with tests.
+- [x] `--restore` flag to unarchive items, with an archive log and tests; verified live.
 - [x] Cut the first release: `v0.4.1` tagged in git and pushed.
 - [x] Ran every `kopi` command against real GitHub (`list`, `view`, `create`, `--repo` link, `delete`, `fields`, `items`, `add`).
 - [x] Verified `--init` create-and-link live on `lateralblast/ocicat` (project #3), including the `PATH` argument.

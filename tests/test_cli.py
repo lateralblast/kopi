@@ -7,6 +7,12 @@ import kopi as cli
 
 
 @pytest.fixture(autouse=True)
+def state_file(tmp_path, monkeypatch):
+    """Keep tests away from the real ~/.config/kopi archive log."""
+    monkeypatch.setenv("KOPI_STATE", str(tmp_path / "state" / "archived.json"))
+
+
+@pytest.fixture(autouse=True)
 def no_sleep():
     with mock.patch("kopi.time.sleep") as sleep:
         yield sleep
@@ -757,3 +763,110 @@ def test_file_argument_errors(tmp_path, capsys):
         assert cli.main(["--import", str(tmp_path / "CHANGELOG.md")]) == 1  # missing
     err = capsys.readouterr().err
     assert "only CHANGELOG.md or TODO.md" in err and "expected a directory" in err and "no such file" in err
+
+
+def _undone(run):
+    return [c.args[c.args.index("--id") + 1] for c in run.call_args_list
+            if c.args[:2] == ("project", "item-archive") and "--undo" in c.args]
+
+
+def test_archive_logs_and_restore_undoes_it(capsys):
+    _run_update(ORPHANS, argv=("--archive",), linked=[("Todo", "Some issue", "https://x/1")])
+    log = cli.load_archive_log()
+    assert [e["id"] for e in log] == ["O", "OP"] and log[0]["owner"] == "lateralblast" and log[0]["project"] == 2
+    _run_update([], argv=("--restore", "--dry-run"))
+    assert "Dry run: 2 to restore" in capsys.readouterr().out and len(cli.load_archive_log()) == 2
+    rc, rj, run = _run_update([], argv=("--restore",))
+    assert rc == 0 and _undone(run) == ["O", "OP"] and cli.load_archive_log() == []
+    assert "Restored 2 items" in capsys.readouterr().out
+
+
+def test_archive_dry_run_does_not_log():
+    _run_update(ORPHANS, argv=("--archive", "--dry-run"), linked=[("Todo", "Some issue", "https://x/1")])
+    assert cli.load_archive_log() == []
+
+
+def test_restore_only_this_project_and_by_id(capsys):
+    cli.save_archive_log([{"owner": "lateralblast", "project": 2, "id": "A", "title": "mine", "status": "Todo"},
+                          {"owner": "lateralblast", "project": 9, "id": "B", "title": "other project", "status": "Todo"}])
+    rc, rj, run = _run_update([], argv=("--restore",))
+    assert _undone(run) == ["A"] and [e["id"] for e in cli.load_archive_log()] == ["B"]
+    rc, rj, run = _run_update([], argv=("--restore", "--id", "X1", "--id", "X2"))
+    assert _undone(run) == ["X1", "X2"]
+
+
+def test_restore_failure_is_a_warning_and_keeps_log(capsys):
+    cli.save_archive_log([{"owner": "lateralblast", "project": 2, "id": "A", "title": "mine", "status": "Todo"}])
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="lateralblast"), \
+         mock.patch("kopi.git_repo", return_value=("lateralblast", "kopi")), \
+         mock.patch("kopi.run_json", return_value={"projects": [{"number": 2, "title": "kopi", "url": "u"}]}), \
+         mock.patch("kopi.run", side_effect=cli.GhError("nope")):
+        rc = cli.main(["--json", "--restore"])
+    cap = capsys.readouterr()
+    data = json.loads(cap.out)
+    assert rc == 0 and data["restored"] == [] and data["failed"][0]["id"] == "A" and "could not restore A" in cap.err
+    assert [e["id"] for e in cli.load_archive_log()] == ["A"]
+
+
+def test_restore_nothing_logged(capsys):
+    rc, rj, run = _run_update([], argv=("--restore",))
+    assert rc == 0 and _undone(run) == [] and "Nothing to restore" in capsys.readouterr().out
+
+
+def test_archive_single_item_by_id_any_status():
+    rc, rj, run = _run_update(ORPHANS, argv=("--archive", "--id", "OD", "--id", "L1"))
+    assert rc == 0 and _archived(run) == ["OD", "L1"]  # a Done item and a linked one: explicit, so allowed
+    assert [e["id"] for e in cli.load_archive_log()] == ["OD", "L1"]  # logged, so --restore can undo it
+    assert not any(c.args[1] == "item-add" for c in rj.call_args_list)  # no file/issue sync for single items
+
+
+def test_archive_single_item_by_match_and_dry_run(capsys):
+    rc, rj, run = _run_update(ORPHANS, argv=("--archive", "--match", "half-done", "--dry-run"))
+    assert rc == 0 and _archived(run) == [] and cli.load_archive_log() == []
+    assert "archive\tIn Progress\tHalf-done old idea" in capsys.readouterr().out
+    rc, rj, run = _run_update(ORPHANS, argv=("--archive", "--match", "half-done", "--json"))
+    assert _archived(run) == ["OP"]
+    assert json.loads(capsys.readouterr().out)["archived"] == [{"status": "In Progress", "title": "Half-done old idea"}]
+
+
+def test_archive_single_item_errors(capsys):
+    assert _run_update(ORPHANS, argv=("--archive", "--id", "NOPE"))[0] == 1
+    assert _run_update(ORPHANS, argv=("--archive", "--match", "old"))[0] == 1   # several match
+    assert _run_update(ORPHANS, argv=("--archive", "--match", "zzz"))[0] == 1   # none match
+    err = capsys.readouterr().err
+    assert "no item with id NOPE" in err and "matched 3 items" in err and "matched 0 items" in err
+    assert "OP\tHalf-done old idea" in err
+
+
+def _edited(run):
+    return [(c.args[c.args.index("--id") + 1], c.args[c.args.index("--single-select-option-id") + 1])
+            for c in run.call_args_list if c.args[:2] == ("project", "item-edit")]
+
+
+def test_done_by_text_moves_todo_and_in_progress(capsys):
+    rc, rj, run = _run_update(ORPHANS, argv=("--done", "old idea nobody"))
+    assert rc == 0 and _edited(run) == [("O", "o3")]
+    assert "Moved to Done: Old idea nobody wants (was Todo)" in capsys.readouterr().out
+    rc, rj, run = _run_update(ORPHANS, argv=("--done", "OP"))  # by id; In Progress -> Done
+    assert _edited(run) == [("OP", "o3")]
+
+
+def test_done_already_done_and_dry_run(capsys):
+    rc, rj, run = _run_update(ORPHANS, argv=("--done", "OD"))
+    assert rc == 0 and _edited(run) == [] and "Already Done" in capsys.readouterr().out
+    rc, rj, run = _run_update(ORPHANS, argv=("--done", "OP", "--dry-run"))
+    assert _edited(run) == [] and "move\tIn Progress -> Done\tHalf-done old idea" in capsys.readouterr().out
+
+
+def test_done_json_and_errors(capsys):
+    _run_update(ORPHANS, argv=("--json", "--done", "O"))
+    assert json.loads(capsys.readouterr().out)["moved"] == [{"title": "Old idea nobody wants", "from": "Todo", "to": "Done"}]
+    assert _run_update(ORPHANS, argv=("--done", "old"))[0] == 1       # ambiguous text
+    assert _run_update(ORPHANS, argv=("--done", "zzz"))[0] == 1       # no match
+    assert "matched 3 items" in capsys.readouterr().err
+
+
+def test_done_value_is_not_treated_as_a_path():
+    with mock.patch("kopi.os.chdir") as chdir:
+        _run_update(ORPHANS, argv=("--done", "O"))
+    chdir.assert_not_called()

@@ -1,6 +1,6 @@
 # kopi
 
-Version: 0.4.2
+Version: 0.4.5
 
 Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -18,7 +18,10 @@ Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI
 ./kopi.py --import [PATH|FILE] [--dry-run] [--force]   # seed the project from CHANGELOG.md, TODO.md, issues and PRs
 ./kopi.py --update [PATH|FILE] [--dry-run]            # sync CHANGELOG.md / TODO.md changes into the project
 ./kopi.py --diff [PATH]                    # show how the project differs from the files/issues/PRs
+./kopi.py --archive [PATH] [--id ID | --match TEXT]  # archive one item (see below)
 ./kopi.py --archive [PATH] [--dry-run] [--force]  # archive open board drafts no longer in TODO.md
+./kopi.py --done ITEM [--dry-run]               # move one board item to Done (ITEM: id or title text)
+./kopi.py --restore [PATH] [--dry-run] [--id ID]  # unarchive items that --archive archived
 ./kopi.py --squash [PATH] [--dry-run]             # delete duplicate board items
 ./kopi.py --json <command or mode>        # print the result as JSON (see below)
 ./kopi.py --version
@@ -36,7 +39,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `create`: `{number, url, linked_repo}`; `--init`: `{number, created}`; `delete`: `{deleted}`; `add`: `{added}`.
 - `--import` and `--update`: `{project, dry_run, added: [{status, title, url?}], moved: [{title, from, to}]}` (`--import` reports `items`, `skipped` on a dry run and `imported` otherwise).
 - `--diff`: `{project, files_only, github_only, board_only, duplicates, behind, ahead}`.
-- `--archive`: `{project, dry_run, archived, skipped}`; `--squash`: `{project, dry_run, deleted}`.
+- `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--done`: `{project, dry_run, moved: [{title, from, to}]}`; `--squash`: `{project, dry_run, deleted}`.
 
 ## Initialising a project for a repo
 
@@ -99,6 +102,33 @@ By default `--import` and `--update` process both `CHANGELOG.md` and `TODO.md`, 
 - Issues and PRs are skipped when a single file is given.
 - Only `CHANGELOG.md` and `TODO.md` are accepted, and the file must exist. `--init`, `--diff`, `--archive` and `--squash` take directories only.
 - Matching works as usual but sees only that file. For example, `--import TODO.md` cannot dedupe `[x]` items against the changelog, so completed TODO items are imported as Done; and `--update CHANGELOG.md` will not move items based on `TODO.md`.
+
+### Archiving a single item
+
+Give `--archive` an item to archive just that one, ignoring the files and the orphan rules above:
+
+- `kopi --archive --id PVTI_...` archives the item with that id (repeatable). Ids are the `id` field from `kopi items N` (`--limit` defaults to 30, so raise it for large boards).
+- `kopi --archive --match "some text"` archives the one item whose title contains the text (case-insensitive). It is an error if zero or several items match; the error lists the candidates with their ids.
+- Any status or kind of item can be archived this way, including Done items and linked issues/PRs, since you named it explicitly. `--dry-run` shows what would be archived.
+- Single archives are recorded in the same log, so `--restore` can undo them.
+
+## Marking an item done (`--done`)
+
+`kopi --done ITEM` moves one board item to **Done**. `ITEM` is either an item id (`PVTI_...`, from `kopi items N`) or text that matches exactly one item's title, ignoring case: `kopi --done "single archive"`. If the text matches no item, or several, it fails and lists the candidates with their ids.
+
+- It moves items from Todo or In Progress. An item that is already Done is reported and left alone. Use `--dry-run` to preview.
+- It changes the board only. `TODO.md`, `CHANGELOG.md` and any linked issue or PR are not touched, so tick the item in `TODO.md` too, or the next `--update` will see the board ahead of the file (shown as `ahead` by `--diff`, never moved back).
+- Run it from the repo's directory (the project is found from the git `origin`); it takes no path argument because its value is the item.
+
+## Restoring archived items (`--restore`)
+
+`kopi --restore` unarchives the items that `kopi --archive` archived in this project, with their status intact. Use `--dry-run` to see them first.
+
+GitHub's API cannot list archived items, so `--archive` records each item it archives (owner, project, item id, title, status, date) in a small local log, `~/.config/kopi/archived.json` (override the location with the `KOPI_STATE` environment variable), and `--restore` reads it. Restored items are removed from the log. If an item can't be restored (for example it was deleted), `kopi` warns and keeps its entry.
+
+- Items archived by hand, on another machine, or before this feature existed are not in the log. Restore them by id with `kopi --restore --id ITEM_ID` (repeatable), using the `PVTI_...` item id (the `id` field from `kopi items`, which is how `--archive` identifies items).
+- Only items from the current project are restored, even if the log holds others.
+- `--restore` only undoes an archive. Run `--update` afterwards if you want the board brought back in line with the files, but note that `--archive` would archive a restored orphan again.
 
 ## Choosing the owner
 

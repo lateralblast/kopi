@@ -7,6 +7,21 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-10
+
+### Added
+- `--done ITEM` flag (with `--dry-run`): move one board item from Todo or In Progress to Done. `ITEM` is an item id or text matching exactly one title (an error lists the candidates otherwise). Board only; verified live. Documented in `README.md`.
+
+## [0.4.4] - 2026-10-10
+
+### Added
+- `--archive --id ITEM_ID` (repeatable) and `--archive --match TEXT` archive individual items instead of the stale-orphan sweep. Any status or kind of item can be archived this way; `--match` must match exactly one title. The items are recorded in the archive log, so `--restore` can undo them. Documented in `README.md`.
+
+## [0.4.3] - 2026-10-10
+
+### Added
+- `--restore` flag (with `--dry-run` and `--id`): unarchive the items `--archive` archived in this project. GitHub's API cannot list archived items, so `--archive` now records what it archives in `~/.config/kopi/archived.json` (or `$KOPI_STATE`) and `--restore` reads that log; `--id ITEM_ID` restores specific items not in the log. Verified live. Documented in `README.md`.
+
 ## [0.4.2] - 2026-10-10
 
 ### Changed

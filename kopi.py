@@ -8,6 +8,7 @@ Copyright (c) Richard Spindler. Licensed under CC BY-NC-SA 4.0:
 https://creativecommons.org/licenses/by-nc-sa/4.0/ (see LICENSE.md)
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -16,7 +17,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.4.2"
+__version__ = "0.4.5"
 
 
 class GhError(RuntimeError):
@@ -558,12 +559,108 @@ def cmd_diff(args):
           f"{counts[3]} behind, {counts[4]} ahead, {counts[5]} duplicates (see --squash)")
 
 
+def _state_path():
+    """Where --archive records what it archived (GitHub's API cannot list archived items). KOPI_STATE overrides."""
+    return os.environ.get("KOPI_STATE") or os.path.join(os.path.expanduser("~"), ".config", "kopi", "archived.json")
+
+
+def load_archive_log():
+    try:
+        with open(_state_path()) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def save_archive_log(entries):
+    path = _state_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(entries, f, indent=2)
+
+
+def _log_archived(args, number, item):
+    save_archive_log(load_archive_log() + [{
+        "owner": args.owner, "project": number, "id": item["id"], "title": item["title"],
+        "status": item.get("status") or "none", "archived": datetime.date.today().isoformat()}])
+
+
+def _match_one(items, text, number, flag):
+    """The one item whose title contains `text` (case-insensitive); GhError listing candidates otherwise."""
+    hits = [i for i in items if text.lower() in i["title"].lower()]
+    if len(hits) != 1:
+        lines = "".join(f"\n  {i['id']}\t{i['title']}" for i in hits[:10])
+        raise GhError(f"{flag} {text!r} matched {len(hits)} items in project #{number}"
+                      + (", expected exactly one; use the item id for one of:" + lines if hits else ""))
+    return hits[0]
+
+
+def cmd_done(args):
+    """Move one board item to Done. ITEM is an item id (PVTI_...) or text matching exactly one title.
+
+    Moves from Todo or In Progress; an item that is already Done is left alone. Board only: the files and
+    any linked issue/PR are not changed.
+    """
+    project, _ = find_project(args)
+    if not project:
+        raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
+    number = project["number"]
+    items = run_json("project", "item-list", str(number), *_owner(args), "--limit", "500")["items"]
+    item = next((i for i in items if i["id"] == args.done), None) or _match_one(items, args.done, number, "--done")
+    old = item.get("status") or "none"
+    report = {"project": number, "dry_run": bool(args.dry_run), "moved": []}
+    if old == "Done":
+        say(args, f"Already Done: {item['title']}")
+    elif args.dry_run:
+        report["moved"].append({"title": item["title"], "from": old, "to": "Done"})
+        say(args, f"move\t{old} -> Done\t{item['title']}")
+    else:
+        _status_setter(args, number, ["Done"])(item["id"], "Done")
+        report["moved"].append({"title": item["title"], "from": old, "to": "Done"})
+        say(args, f"Moved to Done: {item['title']} (was {old})")
+    emit(args, report)
+
+
+def _archive_selected(args):
+    """Archive the individual items named by --id (repeatable) and/or --match, whatever their status or kind."""
+    project, _ = find_project(args)
+    if not project:
+        raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
+    number = project["number"]
+    items = run_json("project", "item-list", str(number), *_owner(args), "--limit", "500")["items"]
+    chosen = []
+    for item_id in args.id or []:
+        item = next((i for i in items if i["id"] == item_id), None)
+        if not item:
+            raise GhError(f"no item with id {item_id} in project #{number} (see `kopi items {number}`)")
+        chosen.append(item)
+    if args.match:
+        chosen.append(_match_one(items, args.match, number, "--match"))
+    chosen = list({i["id"]: i for i in chosen}.values())
+    report = {"project": number, "dry_run": bool(args.dry_run),
+              "archived": [_item(i.get("status") or "none", i["title"]) for i in chosen], "skipped": []}
+    for item in chosen:
+        if args.dry_run:
+            say(args, f"archive\t{item.get('status') or 'none'}\t{item['title']}")
+        else:
+            run("project", "item-archive", str(number), *_owner(args), "--id", item["id"])
+            _log_archived(args, number, item)
+    say(args, f"Dry run: {len(chosen)} to archive in project #{number}" if args.dry_run
+        else f"Archived {len(chosen)} items in project #{number}")
+    emit(args, report)
+
+
 def cmd_archive(args):
     """Archive open board drafts that no longer match any CHANGELOG.md / TODO.md entry.
 
-    Done items and linked issues/PRs are never archived. An orphan that resembles a pending new item
+    With --id / --match, archive just those individual items instead (any status or kind).
+
+    In bulk mode, Done items and linked issues/PRs are never archived. An orphan that resembles a pending new item
     (50%+ shared words) is probably a reworded one, so it is skipped unless --force is given.
     """
+    if args.id or args.match:
+        return _archive_selected(args)
     p = sync_plan(args)
     pending = [body or title for _, title, body in p.adds] + [title for _, title, _ in p.link_adds]
     to_archive, reworded = [], []
@@ -587,8 +684,53 @@ def cmd_archive(args):
         return
     for item in to_archive:
         run("project", "item-archive", str(p.number), *_owner(args), "--id", item["id"])
+        _log_archived(args, p.number, item)
     msg = f"Archived {len(to_archive)} items in project #{p.number}"
     say(args, msg + (f" ({len(reworded)} skipped as possibly reworded; use --force)" if reworded else ""))
+    emit(args, report)
+
+
+def cmd_restore(args):
+    """Unarchive items. By default every item `kopi --archive` archived in this project (from its local log);
+    --id restores specific item ids instead, including ones archived by hand.
+
+    GitHub's API cannot list archived items, so the log is the only record; an item archived elsewhere
+    can only be restored by passing its id.
+    """
+    project, _ = find_project(args)
+    if not project:
+        raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
+    number = project["number"]
+    log = load_archive_log()
+    mine = [e for e in log if e.get("owner") == args.owner and e.get("project") == number]
+    if args.id:
+        known = {e["id"]: e for e in mine}
+        targets = [known.get(i, {"id": i, "title": "(not in kopi's log)", "status": "none"}) for i in args.id]
+    else:
+        targets = mine
+    report = {"project": number, "dry_run": bool(args.dry_run), "restored": [], "failed": []}
+    for e in targets:
+        entry = {"id": e["id"], "title": e.get("title", ""), "status": e.get("status", "none")}
+        if args.dry_run:
+            report["restored"].append(entry)
+            say(args, f"restore\t{entry['status']}\t{entry['title']}\t{entry['id']}")
+            continue
+        try:
+            run("project", "item-archive", str(number), *_owner(args), "--id", e["id"], "--undo")
+        except GhError as err:
+            report["failed"].append({**entry, "error": str(err)})
+            print(f"warning: could not restore {e['id']} ({entry['title']}): {err}", file=sys.stderr)
+            continue
+        report["restored"].append(entry)
+        log = [x for x in log if x.get("id") != e["id"]]
+        save_archive_log(log)
+    n = len(report["restored"])
+    if args.dry_run:
+        say(args, f"Dry run: {n} to restore in project #{number}")
+    elif not targets:
+        say(args, f"Nothing to restore in project #{number} (kopi has no record of archived items; use --id)")
+    else:
+        say(args, f"Restored {n} items in project #{number}" + (f" ({len(report['failed'])} failed)" if report["failed"] else ""))
     emit(args, report)
 
 
@@ -700,7 +842,18 @@ def build_parser():
                         "uses the repo in PATH, default the current directory")
     p.add_argument("--json", action="store_true",
                    help="print the result as JSON on stdout (status messages are suppressed; warnings stay on stderr)")
-    p.add_argument("--dry-run", action="store_true", help="with --import/--update/--archive/--squash: print what would change")
+    p.add_argument("--done", metavar="ITEM",
+                   help="move one board item to Done: ITEM is an item id or text matching exactly one title "
+                        "(run from the repo directory)")
+    p.add_argument("--restore", nargs="?", const=".", metavar="PATH",
+                   help="unarchive the items kopi --archive archived in this project (or those given with --id); "
+                        "uses the repo in PATH, default the current directory")
+    p.add_argument("--id", action="append", metavar="ITEM_ID",
+                   help="with --archive: archive just this item id (repeatable); "
+                        "with --restore: restore this item id (repeatable) instead of the logged ones")
+    p.add_argument("--match", metavar="TEXT",
+                   help="with --archive: archive the one item whose title contains TEXT (case-insensitive; error if not exactly one)")
+    p.add_argument("--dry-run", action="store_true", help="with --import/--update/--archive/--squash/--restore: print what would change")
     p.add_argument("--force", action="store_true",
                    help="with --import: import even if the project has items; with --archive: also archive items that look reworded")
     sub = p.add_subparsers(dest="cmd")
@@ -739,13 +892,13 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.squash]
+    modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.squash, args.restore, args.done]
     if not (any(modes) or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --squash)")
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --squash / --restore / --done)")
     if sum(map(bool, modes)) > 1:
-        parser.error("--init, --import, --update, --diff, --archive and --squash are mutually exclusive")
+        parser.error("--init, --import, --update, --diff, --archive, --squash, --restore and --done are mutually exclusive")
     try:
-        path = next((m for m in modes if m), None)
+        path = next((m for m in modes if m and m is not args.done), None)  # --done's value is an item, not a path
         args.only = None
         if path:
             if os.path.isfile(path) or os.path.basename(path) in SOURCE_FILES:
@@ -770,7 +923,7 @@ def main(argv=None):
                 args.owner = "@me"
         handler = next((fn for on, fn in ((args.do_import, cmd_import), (args.update, cmd_update),
                                           (args.diff, cmd_diff), (args.archive, cmd_archive),
-                                          (args.squash, cmd_squash),
+                                          (args.squash, cmd_squash), (args.restore, cmd_restore), (args.done, cmd_done),
                                           (args.init, cmd_init)) if on), getattr(args, "fn", None))
         handler(args)
     except GhError as e:

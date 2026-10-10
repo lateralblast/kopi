@@ -1,6 +1,6 @@
 # kopi
 
-Version: 0.4.5
+Version: 0.4.8
 
 Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -13,6 +13,7 @@ Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI
 ./kopi.py delete N
 ./kopi.py fields N
 ./kopi.py items N
+./kopi.py set N ITEM --field NAME (--value V | --clear)   # set a field value on one item
 ./kopi.py add N --url <issue-or-pr-url>    # or --title "draft item"
 ./kopi.py --init [PATH]                    # ensure the current repo has a project
 ./kopi.py --import [PATH|FILE] [--dry-run] [--force]   # seed the project from CHANGELOG.md, TODO.md, issues and PRs
@@ -22,7 +23,8 @@ Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI
 ./kopi.py --archive [PATH] [--dry-run] [--force]  # archive open board drafts no longer in TODO.md
 ./kopi.py --done ITEM [--dry-run]               # move one board item to Done (ITEM: id or title text)
 ./kopi.py --restore [PATH] [--dry-run] [--id ID]  # unarchive items that --archive archived
-./kopi.py --squash [PATH] [--dry-run]             # delete duplicate board items
+./kopi.py --squash [PATH] [--dry-run]             # tick TODO.md entries that are Done on the board
+./kopi.py --dedupe [PATH] [--dry-run]             # delete duplicate board items
 ./kopi.py --json <command or mode>        # print the result as JSON (see below)
 ./kopi.py --version
 ```
@@ -39,7 +41,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `create`: `{number, url, linked_repo}`; `--init`: `{number, created}`; `delete`: `{deleted}`; `add`: `{added}`.
 - `--import` and `--update`: `{project, dry_run, added: [{status, title, url?}], moved: [{title, from, to}]}` (`--import` reports `items`, `skipped` on a dry run and `imported` otherwise).
 - `--diff`: `{project, files_only, github_only, board_only, duplicates, behind, ahead}`.
-- `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--done`: `{project, dry_run, moved: [{title, from, to}]}`; `--squash`: `{project, dry_run, deleted}`.
+- `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--done`: `{project, dry_run, moved: [{title, from, to}]}`; `--squash`: `{project, dry_run, ticked: [{title, from}]}`; `set`: `{project, dry_run, item, field, value}`; `--dedupe`: `{project, dry_run, deleted}`.
 
 ## Initialising a project for a repo
 
@@ -75,7 +77,7 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 - `files-only`: in `CHANGELOG.md` / `TODO.md` but not on the board (`--update` would add it).
 - `github-only`: an issue or PR not on the board (`--update` would add it).
 - `board-only`: a draft item on the board that matches no file entry.
-- `duplicate`: an extra copy of a board item (same title, or same issue/PR URL), with the status of the copy `--squash` would keep. Each duplicate is listed once, here, not also as `board-only`. Run `kopi --squash` to remove them.
+- `duplicate`: an extra copy of a board item (same title, or same issue/PR URL), with the status of the copy `--dedupe` would keep. Each duplicate is listed once, here, not also as `board-only`. Run `kopi --dedupe` to remove them.
 - `behind`: the board's status is behind the file or GitHub (`--update` would move it forward).
 - `ahead`: the board's status is ahead of the file (for example Done on the board, still `[ ]` in `TODO.md`). `--update` leaves these alone.
 
@@ -87,20 +89,20 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 - An orphan that shares 50%+ of its words with a pending new item is probably a reworded one, so it is skipped and reported. Pass `--force` to archive it anyway.
 - Use `--dry-run` first. Items created by hand on the board count as orphans too.
 
-## Removing duplicates (`--squash`)
+## Removing duplicates (`--dedupe`)
 
-`kopi --squash` deletes duplicate items from the board: drafts with the same title (ignoring case and spacing) and linked issues/PRs with the same URL. In each group it keeps the copy furthest along (Done over In Progress over Todo, the first listed on a tie) and **deletes** the rest, which cannot be undone, so run with `--dry-run` first. It looks only at the board, not the files. Duplicates usually come from running `--update` twice before GitHub's item listing catches up.
+`kopi --dedupe` deletes duplicate items from the board: drafts with the same title (ignoring case and spacing) and linked issues/PRs with the same URL. In each group it keeps the copy furthest along (Done over In Progress over Todo, the first listed on a tie) and **deletes** the rest, which cannot be undone, so run with `--dry-run` first. It looks only at the board, not the files. Duplicates usually come from running `--update` twice before GitHub's item listing catches up.
 
 ## Running against another repo
 
-`--init`, `--import`, `--update`, `--diff`, `--archive` and `--squash` work on the current directory by default. Give them a path to work on the repo there instead, for example `kopi --update ~/code/other-repo`. The path's `CHANGELOG.md`, `TODO.md` and git `origin` are used, so the project and owner are resolved from that repo. It must be a directory. Put the path right after the flag, before other options (`kopi --update PATH --dry-run`).
+`--init`, `--import`, `--update`, `--diff`, `--archive` and `--dedupe` work on the current directory by default. Give them a path to work on the repo there instead, for example `kopi --update ~/code/other-repo`. The path's `CHANGELOG.md`, `TODO.md` and git `origin` are used, so the project and owner are resolved from that repo. It must be a directory. Put the path right after the flag, before other options (`kopi --update PATH --dry-run`).
 
 ## Importing or updating a single file
 
 By default `--import` and `--update` process both `CHANGELOG.md` and `TODO.md`, plus the repo's issues and PRs. Give one of those file names instead of a directory to process only that file: `kopi --import CHANGELOG.md`, `kopi --update TODO.md`. The file may carry a directory (`kopi --update ~/code/other-repo/TODO.md`), which is then used as the repo.
 
 - Issues and PRs are skipped when a single file is given.
-- Only `CHANGELOG.md` and `TODO.md` are accepted, and the file must exist. `--init`, `--diff`, `--archive` and `--squash` take directories only.
+- Only `CHANGELOG.md` and `TODO.md` are accepted, and the file must exist. `--init`, `--diff`, `--archive` and `--dedupe` take directories only.
 - Matching works as usual but sees only that file. For example, `--import TODO.md` cannot dedupe `[x]` items against the changelog, so completed TODO items are imported as Done; and `--update CHANGELOG.md` will not move items based on `TODO.md`.
 
 ### Archiving a single item
@@ -111,6 +113,23 @@ Give `--archive` an item to archive just that one, ignoring the files and the or
 - `kopi --archive --match "some text"` archives the one item whose title contains the text (case-insensitive). It is an error if zero or several items match; the error lists the candidates with their ids.
 - Any status or kind of item can be archived this way, including Done items and linked issues/PRs, since you named it explicitly. `--dry-run` shows what would be archived.
 - Single archives are recorded in the same log, so `--restore` can undo them.
+
+## Ticking TODO.md from the board (`--squash`)
+
+`kopi --squash` is the reverse of `--update`: it looks at the project's **Done** items and, for any whose `TODO.md` entry is still `[ ]` or `[~]`, ticks it to `[x]` in the local file. Use `--dry-run` to see which entries would change. It takes an optional directory like the other modes.
+
+- It edits `TODO.md` only; the board is not touched. It does not commit, and it ticks the entry in place rather than moving it to a Done section, so move it yourself if you keep a separate Done list.
+- Entries are matched to board items exactly as `--update` does (identical title, or 75%+ shared words). Only `TODO.md` is read: issues, PRs and the changelog are ignored.
+- Open board items (Todo, In Progress) never cause a tick, and nothing is ever un-ticked.
+- Pairs well with `--done`: mark an item done on the board, then `--squash` ticks it in the file.
+
+## Setting field values (`set`)
+
+`kopi set N ITEM --field NAME --value VALUE` sets one field on one item, using GraphQL. `ITEM` is an item id or text matching exactly one title (as for `--done`). `--clear` empties the field instead. Global flags go before the command: `kopi --dry-run set ...`, `kopi --json set ...`.
+
+- Supported field types: **text**, **number**, **date** (`YYYY-MM-DD`), **single select** (an option name) and **iteration** (an iteration title). Names and option names are matched ignoring case. A value that doesn't fit the field type is rejected before anything is sent, with a message listing the valid choices.
+- Built-in fields such as Title, Assignees, Labels, Milestone and Repository are not settable here. Status is a single select, so `kopi set N ITEM --field Status --value Done` works (though `--done` is the shortcut).
+- To create the custom fields to set in the first place, use `gh project field-create`.
 
 ## Marking an item done (`--done`)
 

@@ -6,10 +6,12 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 - [ ] Consider opt-in import of TODO/FIXME code comments and GitHub releases/tags (notes in [RESEARCH.md](RESEARCH.md)).
 - [ ] Make `--restore` find items archived outside kopi (GitHub's API can't list archived items; only the local log and `--id` work today).
-- [ ] Set item field values (status, etc.) via the `graphql()` helper.
 
 ## Done
 
+- [x] Set item field values via the `graphql()` helper (`kopi set`), with tests; verified live.
+- [x] `--squash` flag: tick `TODO.md` entries that are Done on the board, with tests (live dry run found nothing to tick).
+- [x] Renamed `--squash` to `--dedupe` (older entries below keep the old name).
 - [x] `--done` flag to move a single item to Done by id or matching text, with tests; verified live.
 - [x] Archive an individual item (`--archive --id` / `--match`), with tests.
 - [x] `--restore` flag to unarchive items, with an archive log and tests; verified live.

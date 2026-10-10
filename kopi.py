@@ -17,7 +17,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.4.5"
+__version__ = "0.4.8"
 
 
 class GhError(RuntimeError):
@@ -404,7 +404,8 @@ def sync_plan(args):
 
     Returns a namespace with: number; adds [(status, title, body)]; link_adds [(status, title, url)];
     moves [(item, from, to, title)] where the board is behind; ahead [(item, board, file, title)] where
-    the board is ahead (never acted on); orphans, the board's draft items that match no file entry.
+    the board is ahead (never acted on); orphans, the board's draft items that match no file entry; ticks
+    [(item, todo text, todo status)] for TODO entries still open although their board item is Done.
     """
     changelog, todo, linked = load_sources(args)
     if not changelog and not todo and not linked:
@@ -453,7 +454,7 @@ def sync_plan(args):
             matched[idx] = item
             claimed.add(item["id"])
 
-    adds, moves, ahead, link_adds = [], [], [], []
+    adds, moves, ahead, link_adds, ticks = [], [], [], [], []
 
     def compare(item, status):
         board = RANK.get(item.get("status"), -1)
@@ -466,6 +467,8 @@ def sync_plan(args):
         item = matched.get(idx)
         if item:
             compare(item, status)
+            if not is_changelog and status != "Done" and RANK.get(item.get("status"), -1) >= RANK["Done"]:
+                ticks.append((item, body or title, status))  # Done on the board, still open in TODO.md
         elif can_add and (is_changelog or not any(similar(body or title, t) for _, t, _ in linked)):
             adds.append((status, title, body))  # a TODO item duplicating an issue/PR title is left to the issue/PR
     for status, title, url in linked:
@@ -477,7 +480,7 @@ def sync_plan(args):
 
     matched_ids = {i["id"] for i in matched.values()}
     orphans = [i for i in existing if i["id"] not in matched_ids and i["id"] not in linked_ids]
-    return SimpleNamespace(number=number, adds=adds, link_adds=link_adds, moves=moves, ahead=ahead, orphans=orphans, items=existing)
+    return SimpleNamespace(number=number, adds=adds, link_adds=link_adds, moves=moves, ahead=ahead, orphans=orphans, items=existing, ticks=ticks)
 
 
 def cmd_update(args):
@@ -556,7 +559,7 @@ def cmd_diff(args):
         print(f"No differences in project #{p.number}")
         return
     print(f"Project #{p.number}: {counts[0]} only in files, {counts[1]} only on GitHub, {counts[2]} only on board, "
-          f"{counts[3]} behind, {counts[4]} ahead, {counts[5]} duplicates (see --squash)")
+          f"{counts[3]} behind, {counts[4]} ahead, {counts[5]} duplicates (see --dedupe)")
 
 
 def _state_path():
@@ -690,6 +693,34 @@ def cmd_archive(args):
     emit(args, report)
 
 
+def cmd_squash(args):
+    """Tick TODO.md entries that are Done on the board but still `[ ]` or `[~]` in the file.
+
+    The reverse of --update: it edits the local TODO.md only (the board is untouched) and does not move the
+    line to the Done section. Matching is the same as --update's; only TODO.md is read, issues/PRs and
+    the changelog are not consulted.
+    """
+    args.only = "TODO.md"
+    p = sync_plan(args)
+    text = _read("TODO.md")
+    ticked = []
+    for item, entry, status in p.ticks:
+        pattern = re.compile(r"^(- \[)[ ~](\] " + re.escape(entry) + r")[ \t]*$", re.M)
+        text, n = pattern.subn(r"\g<1>x\g<2>", text, count=1)
+        if n:
+            ticked.append({"title": entry, "from": status})
+    if ticked and not args.dry_run:
+        with open("TODO.md", "w") as f:
+            f.write(text)
+    if args.json:
+        emit(args, {"project": p.number, "dry_run": bool(args.dry_run), "ticked": ticked})
+        return
+    for t in ticked:
+        print(f"{'tick' if args.dry_run else 'ticked'}\t{t['from']}\t{t['title']}")
+    verb = "to tick" if args.dry_run else "ticked"
+    print(("Dry run: " if args.dry_run else "") + f"{len(ticked)} TODO.md items {verb} (Done in project #{p.number})")
+
+
 def cmd_restore(args):
     """Unarchive items. By default every item `kopi --archive` archived in this project (from its local log);
     --id restores specific item ids instead, including ones archived by hand.
@@ -750,7 +781,7 @@ def find_duplicates(items):
     return dupes
 
 
-def cmd_squash(args):
+def cmd_dedupe(args):
     """Delete duplicate board items: same URL (linked) or same title (drafts).
 
     Keeps the copy furthest along (Done over In Progress over Todo), the earliest listed on a tie. Works
@@ -806,6 +837,75 @@ def cmd_items(args):
         print(f"{i['id']}\t{i.get('status', '')}\t{i['title']}")
 
 
+FIELDS_QUERY = """query($id: ID!) { node(id: $id) { ... on ProjectV2 { fields(first: 100) { nodes {
+  ... on ProjectV2FieldCommon { id name dataType }
+  ... on ProjectV2SingleSelectField { options { id name } }
+  ... on ProjectV2IterationField { configuration { iterations { id title } } } } } } } }"""
+SETTABLE = ("TEXT", "NUMBER", "DATE", "SINGLE_SELECT", "ITERATION")
+
+
+def _field_value_literal(field, value):
+    """GraphQL ProjectV2FieldValue literal for `value` typed by the field's dataType; GhError if it doesn't fit."""
+    kind, name = field["dataType"], field["name"]
+    if kind == "TEXT":
+        return "{text: %s}" % json.dumps(value)
+    if kind == "NUMBER":
+        try:
+            return "{number: %s}" % float(value)
+        except ValueError:
+            raise GhError(f"{name} is a number field; {value!r} is not a number")
+    if kind == "DATE":
+        try:
+            return '{date: "%s"}' % datetime.date.fromisoformat(value).isoformat()
+        except ValueError:
+            raise GhError(f"{name} is a date field; use YYYY-MM-DD, not {value!r}")
+    options = ([(o["id"], o["name"]) for o in field.get("options", [])] if kind == "SINGLE_SELECT"
+               else [(i["id"], i["title"]) for i in field["configuration"]["iterations"]])
+    chosen = next((i for i, n in options if n.lower() == value.lower()), None)
+    if not chosen:
+        raise GhError(f"{name} has no option {value!r}; choose from: " + ", ".join(n for _, n in options))
+    return '{%s: "%s"}' % ("singleSelectOptionId" if kind == "SINGLE_SELECT" else "iterationId", chosen)
+
+
+def cmd_set(args):
+    """Set (or --clear) one field's value on one item through GraphQL. ITEM is an item id or matching title text.
+
+    Supports text, number, date, single-select and iteration fields; built-in fields such as Title or Labels
+    are not settable here.
+    """
+    project_id = run_json("project", "view", str(args.number), *_owner(args))["id"]
+    items = run_json("project", "item-list", str(args.number), *_owner(args), "--limit", "500")["items"]
+    item = next((i for i in items if i["id"] == args.item), None) or _match_one(items, args.item, args.number, "item")
+    nodes = (graphql(FIELDS_QUERY, id=project_id).get("data", {}).get("node") or {}).get("fields", {}).get("nodes", [])
+    fields = [f for f in nodes if f.get("name")]
+    field = next((f for f in fields if f["name"].lower() == args.field.lower()), None)
+    if not field:
+        raise GhError(f"no field {args.field!r} in project #{args.number}; settable fields: "
+                      + ", ".join(f["name"] for f in fields if f.get("dataType") in SETTABLE))
+    if field["dataType"] not in SETTABLE:
+        raise GhError(f"field {field['name']} ({field['dataType']}) can't be set here; "
+                      "settable types: " + ", ".join(SETTABLE))
+    if args.clear == (args.value is not None):
+        raise GhError("give exactly one of --value or --clear")
+    ids = f'projectId: "{project_id}", itemId: "{item["id"]}", fieldId: "{field["id"]}"'
+    if args.dry_run:
+        say(args, f"{'clear' if args.clear else 'set'}\t{field['name']}\t{args.value if not args.clear else ''}\t{item['title']}")
+    else:
+        if args.clear:
+            query = f"mutation {{ clearProjectV2ItemFieldValue(input: {{{ids}}}) {{ projectV2Item {{ id }} }} }}"
+        else:
+            literal = _field_value_literal(field, args.value)
+            query = (f"mutation {{ updateProjectV2ItemFieldValue(input: {{{ids}, value: {literal}}}) "
+                     "{ projectV2Item { id } } }")
+        result = graphql(query)
+        if result.get("errors"):
+            raise GhError("; ".join(e.get("message", "?") for e in result["errors"]))
+        say(args, f"Cleared {field['name']} on {item['title']}" if args.clear
+            else f"Set {field['name']} = {args.value} on {item['title']}")
+    emit(args, {"project": args.number, "dry_run": bool(args.dry_run), "item": {"id": item["id"], "title": item["title"]},
+                "field": field["name"], "value": None if args.clear else args.value})
+
+
 def cmd_add(args):
     """Add an existing issue/PR by URL, or create a draft item with --title."""
     if args.url:
@@ -838,6 +938,9 @@ def build_parser():
                    help="archive open board drafts that no longer match any CHANGELOG.md/TODO.md entry; "
                         "uses the repo in PATH, default the current directory")
     p.add_argument("--squash", nargs="?", const=".", metavar="PATH",
+                   help="tick TODO.md entries that are Done in the project but still open in the file; "
+                        "uses the repo in PATH, default the current directory")
+    p.add_argument("--dedupe", nargs="?", const=".", metavar="PATH",
                    help="delete duplicate board items (same title or URL), keeping the one furthest along; "
                         "uses the repo in PATH, default the current directory")
     p.add_argument("--json", action="store_true",
@@ -853,7 +956,7 @@ def build_parser():
                         "with --restore: restore this item id (repeatable) instead of the logged ones")
     p.add_argument("--match", metavar="TEXT",
                    help="with --archive: archive the one item whose title contains TEXT (case-insensitive; error if not exactly one)")
-    p.add_argument("--dry-run", action="store_true", help="with --import/--update/--archive/--squash/--restore: print what would change")
+    p.add_argument("--dry-run", action="store_true", help="with --import/--update/--archive/--dedupe/--squash/--restore: print what would change")
     p.add_argument("--force", action="store_true",
                    help="with --import: import even if the project has items; with --archive: also archive items that look reworded")
     sub = p.add_subparsers(dest="cmd")
@@ -880,6 +983,14 @@ def build_parser():
     s.add_argument("--limit", type=int, default=30)
     s.set_defaults(fn=cmd_items)
 
+    s = sub.add_parser("set", help="set or clear a field value on one item (text, number, date, single-select, iteration)")
+    s.add_argument("number", type=int)
+    s.add_argument("item", help="item id, or text matching exactly one item title")
+    s.add_argument("--field", required=True, help="field name (e.g. Status)")
+    s.add_argument("--value", help="new value; a select/iteration option name, a number, YYYY-MM-DD, or text")
+    s.add_argument("--clear", action="store_true", help="clear the field instead of setting it")
+    s.set_defaults(fn=cmd_set)
+
     s = sub.add_parser("add", help="add an issue/PR (--url) or draft item (--title)")
     s.add_argument("number", type=int)
     g = s.add_mutually_exclusive_group(required=True)
@@ -892,11 +1003,11 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.squash, args.restore, args.done]
+    modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done]
     if not (any(modes) or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --squash / --restore / --done)")
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done)")
     if sum(map(bool, modes)) > 1:
-        parser.error("--init, --import, --update, --diff, --archive, --squash, --restore and --done are mutually exclusive")
+        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore and --done are mutually exclusive")
     try:
         path = next((m for m in modes if m and m is not args.done), None)  # --done's value is an item, not a path
         args.only = None
@@ -923,7 +1034,7 @@ def main(argv=None):
                 args.owner = "@me"
         handler = next((fn for on, fn in ((args.do_import, cmd_import), (args.update, cmd_update),
                                           (args.diff, cmd_diff), (args.archive, cmd_archive),
-                                          (args.squash, cmd_squash), (args.restore, cmd_restore), (args.done, cmd_done),
+                                          (args.dedupe, cmd_dedupe), (args.squash, cmd_squash), (args.restore, cmd_restore), (args.done, cmd_done),
                                           (args.init, cmd_init)) if on), getattr(args, "fn", None))
         handler(args)
     except GhError as e:

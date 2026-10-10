@@ -569,13 +569,13 @@ def _deleted(run):
     return [c.args[c.args.index("--id") + 1] for c in run.call_args_list if c.args[:2] == ("project", "item-delete")]
 
 
-def test_squash_keeps_furthest_along():
-    rc, rj, run = _run_update(DUPES, argv=("--squash",))
+def test_dedupe_keeps_furthest_along():
+    rc, rj, run = _run_update(DUPES, argv=("--dedupe",))
     assert rc == 0 and _deleted(run) == ["B", "C", "F"]
 
 
-def test_squash_dry_run_deletes_nothing(capsys):
-    rc, rj, run = _run_update(DUPES, argv=("--squash", "--dry-run"))
+def test_dedupe_dry_run_deletes_nothing(capsys):
+    rc, rj, run = _run_update(DUPES, argv=("--dedupe", "--dry-run"))
     out = capsys.readouterr().out
     assert rc == 0 and _deleted(run) == [] and "3 duplicates to delete" in out
 
@@ -619,7 +619,7 @@ def test_path_must_be_a_directory(capsys):
 
 
 def test_every_mode_accepts_a_path(tmp_path):
-    for flag in ("--update", "--diff", "--archive", "--squash"):
+    for flag in ("--update", "--diff", "--archive", "--dedupe"):
         with mock.patch("kopi.os.chdir") as chdir:
             rc, *_ = _run_update(BOARD, argv=(flag, str(tmp_path), "--dry-run") if flag != "--diff" else (flag, str(tmp_path)))
         assert rc == 0 and chdir.call_args.args == (str(tmp_path),), flag
@@ -687,11 +687,11 @@ def test_json_update_dry_run_and_real(capsys):
     assert data["dry_run"] is False and "Updated project" not in cap.out
 
 
-def test_json_diff_and_squash_and_archive(capsys):
+def test_json_diff_and_dedupe_and_archive(capsys):
     _run_update(BOARD, argv=("--json", "--diff"))
     data, _ = _json_out(capsys)
     assert set(data) == {"project", "files_only", "github_only", "board_only", "duplicates", "behind", "ahead"}
-    _run_update(DUPES, argv=("--json", "--squash", "--dry-run"))
+    _run_update(DUPES, argv=("--json", "--dedupe", "--dry-run"))
     data, _ = _json_out(capsys)
     assert [i["title"] for i in data["deleted"]] == ["[0.2.3] Verified  update live.", "Same idea", "Issue"]
     _run_update(ORPHANS, argv=("--json", "--archive", "--dry-run"))
@@ -714,7 +714,7 @@ def test_diff_flags_duplicates_once(capsys):
     out = capsys.readouterr().out
     assert "duplicate\tDone\t[0.0.1] Single-file CLI.\t(kept copy: Done)" in out
     assert "board-only\tDone\t[0.0.1] Single-file CLI." not in out  # not also listed as board-only
-    assert "1 duplicates (see --squash)" in out
+    assert "1 duplicates (see --dedupe)" in out
     _run_update(board, argv=("--json", "--diff"))
     data, _ = _json_out(capsys)
     assert [d["title"] for d in data["duplicates"]] == ["[0.0.1] Single-file CLI."]
@@ -870,3 +870,104 @@ def test_done_value_is_not_treated_as_a_path():
     with mock.patch("kopi.os.chdir") as chdir:
         _run_update(ORPHANS, argv=("--done", "O"))
     chdir.assert_not_called()
+
+
+SQUASH_BOARD = [
+    {"id": "J", "title": "Add a `--json` output flag.", "status": "Done"},        # [ ] in TODO.md
+    {"id": "R", "title": "Run against real GitHub.", "status": "Done"},           # [~] in TODO.md
+    {"id": "A", "title": "Auth check before every command, with tests.", "status": "Done"},  # already [x]
+]
+
+
+def test_squash_ticks_todo_entries_done_on_board(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc, rj, run = _run_update(SQUASH_BOARD, argv=("--squash",))
+    out = capsys.readouterr().out
+    assert rc == 0 and "2 TODO.md items ticked" in out
+    new = (tmp_path / "TODO.md").read_text()
+    assert "- [x] Add a `--json` output flag.\n" in new and "- [x] Run against real GitHub.\n" in new
+    assert new.count("[x]") == 4 and "[ ]" not in new and "[~]" not in new
+    assert not any(c.args[:2] == ("project", "item-edit") for c in run.call_args_list)  # board untouched
+    assert not any(c.args[1] == "item-add" for c in rj.call_args_list)  # no issue/PR lookups
+
+
+def test_squash_leaves_open_board_items_and_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    board = [{"id": "J", "title": "Add a `--json` output flag.", "status": "In Progress"}] + SQUASH_BOARD[1:]
+    rc, *_ = _run_update(board, argv=("--squash", "--dry-run"))
+    out = capsys.readouterr().out
+    assert rc == 0 and "tick\tIn Progress\tRun against real GitHub." in out and "1 TODO.md items to tick" in out
+    assert not (tmp_path / "TODO.md").exists()
+    rc, *_ = _run_update(board, argv=("--squash",))
+    new = (tmp_path / "TODO.md").read_text()
+    assert "- [ ] Add a `--json` output flag." in new and "- [x] Run against real GitHub." in new
+
+
+def test_squash_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _run_update(SQUASH_BOARD, argv=("--json", "--squash", "--dry-run"))
+    data = json.loads(capsys.readouterr().out)
+    assert data["dry_run"] is True and sorted(t["from"] for t in data["ticked"]) == ["In Progress", "Todo"]
+
+
+GQL_FIELDS = {"data": {"node": {"fields": {"nodes": [
+    {"id": "F_T", "name": "Notes", "dataType": "TEXT"},
+    {"id": "F_N", "name": "Points", "dataType": "NUMBER"},
+    {"id": "F_D", "name": "Due", "dataType": "DATE"},
+    {"id": "F_S", "name": "Status", "dataType": "SINGLE_SELECT", "options": [
+        {"id": "o1", "name": "Todo"}, {"id": "o3", "name": "Done"}]},
+    {"id": "F_I", "name": "Sprint", "dataType": "ITERATION",
+     "configuration": {"iterations": [{"id": "it1", "title": "Sprint 1"}]}},
+    {"id": "F_L", "name": "Labels", "dataType": "LABELS"},
+    {}]}}}}
+
+
+def _set(*argv, gql_result=None):
+    def fake(*a):
+        return {"view": {"id": "PID"}, "item-list": {"items": ORPHANS}}[a[1]]
+    mutation = []
+
+    def gql(query, **kw):
+        if "fields(first" in query:
+            return GQL_FIELDS
+        mutation.append(query)
+        return gql_result or {"data": {}}
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="o"), \
+         mock.patch("kopi.run_json", side_effect=fake), mock.patch("kopi.graphql", side_effect=gql):
+        rc = cli.main(list(argv))
+    return rc, mutation
+
+
+def test_set_each_field_type():
+    cases = [("Notes", "say \"hi\"", '{text: "say \\"hi\\""}'), ("Points", "3", "{number: 3.0}"),
+             ("Due", "2026-10-31", '{date: "2026-10-31"}'), ("status", "done", '{singleSelectOptionId: "o3"}'),
+             ("Sprint", "sprint 1", '{iterationId: "it1"}')]
+    for field, value, literal in cases:
+        rc, mut = _set("set", "2", "Old idea nobody", "--field", field, "--value", value)
+        assert rc == 0 and len(mut) == 1, field
+        assert literal in mut[0] and 'itemId: "O"' in mut[0] and 'projectId: "PID"' in mut[0]
+
+
+def test_set_clear_dry_run_and_json(capsys):
+    rc, mut = _set("set", "2", "OP", "--field", "Notes", "--clear")
+    assert rc == 0 and "clearProjectV2ItemFieldValue" in mut[0]
+    rc, mut = _set("--dry-run", "set", "2", "OP", "--field", "Notes", "--value", "x")
+    assert rc == 0 and mut == [] and "set\tNotes\tx\tHalf-done old idea" in capsys.readouterr().out
+    capsys.readouterr()
+    rc, mut = _set("--json", "set", "2", "OP", "--field", "Points", "--value", "5")
+    assert json.loads(capsys.readouterr().out) == {"project": 2, "dry_run": False, "item": {"id": "OP", "title": "Half-done old idea"},
+                                                   "field": "Points", "value": "5"}
+
+
+def test_set_errors(capsys):
+    for argv in (("--field", "Nope", "--value", "x"), ("--field", "Labels", "--value", "x"),
+                 ("--field", "Points", "--value", "abc"), ("--field", "Due", "--value", "31/10"),
+                 ("--field", "Status", "--value", "Maybe"), ("--field", "Notes"),
+                 ("--field", "Notes", "--value", "x", "--clear")):
+        assert _set("set", "2", "OP", *argv)[0] == 1, argv
+    assert _set("set", "2", "old", "--field", "Notes", "--value", "x")[0] == 1  # ambiguous item
+    assert _set("set", "2", "OP", "--field", "Notes", "--value", "x", gql_result={"errors": [{"message": "boom"}]})[0] == 1
+    err = capsys.readouterr().err
+    assert "no field 'Nope'" in err and "settable fields: Notes, Points, Due, Status, Sprint" in err
+    assert "can't be set here" in err and "not a number" in err and "YYYY-MM-DD" in err
+    assert "choose from: Todo, Done" in err and "exactly one of --value or --clear" in err and "boom" in err

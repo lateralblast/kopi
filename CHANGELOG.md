@@ -7,6 +7,21 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-10-10
+
+### Added
+- `set N ITEM --field NAME --value VALUE` (or `--clear`) command: set a text, number, date, single-select or iteration field on one item through the `graphql()` helper. Values are validated against the field's type before anything is sent; `--dry-run` and `--json` work. Verified live on scratch text, number, date and Status fields. Documented in `README.md`.
+
+## [0.4.7] - 2026-10-10
+
+### Added
+- `--squash` flag (with `--dry-run`): tick `TODO.md` entries that are Done on the board but still `[ ]` or `[~]` in the file, the reverse of `--update`. Edits the local file only, in place, using the same matching as `--update`. (`--squash` previously meant the duplicate remover, now `--dedupe`.) Documented in `README.md`.
+
+## [0.4.6] - 2026-10-10
+
+### Changed
+- Renamed `--squash` to `--dedupe` (behaviour unchanged). The old `--squash` flag is gone, so update any scripts. Earlier changelog entries keep the old name.
+
 ## [0.4.5] - 2026-10-10
 
 ### Added

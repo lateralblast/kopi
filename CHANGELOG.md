@@ -7,6 +7,19 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-10
+
+### Added
+- `--export inprogress` (also `in-progress`) and `--export done`: write the project's In Progress items as `[~]` entries at the end of `## Open`, and Done items as `[x]` entries at the top of `## Done` (newest first), skipping anything TODO.md already has. For `done`, changelog-derived board items and anything resembling a `CHANGELOG.md` entry are skipped. Documented in `README.md`.
+
+### Changed
+- Inserting into an empty `TODO.md` section now leaves a blank line after the heading.
+
+## [0.5.2] - 2026-10-10
+
+### Added
+- `--export todo` flag (with `--dry-run`): add the project's Todo items to the local `TODO.md` as unchecked entries, skipping any the file already has in any state, and writing them at the end of `## Open`. Never changes the board. Documented in `README.md`.
+
 ## [0.5.1] - 2026-10-10
 
 ### Added

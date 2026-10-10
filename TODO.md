@@ -9,6 +9,8 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] `--export inprogress` and `--export done`, with tests (dry runs checked live).
+- [x] `--export todo` flag: add the board's Todo items to TODO.md as unchecked entries, with tests (dry run checked live).
 - [x] `--list inprogress` (project) and `--list inprogress --local` (TODO.md), with tests.
 - [x] `--list done` (project) and `--list done --local` (TODO.md), with tests.
 - [x] `--list todo` (project) and `--list todo --local` (TODO.md) flags, with tests; run live.

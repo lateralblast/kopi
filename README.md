@@ -1,6 +1,6 @@
 # kopi
 
-Version: 0.5.1
+Version: 0.5.3
 
 Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -21,6 +21,7 @@ Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI
 ./kopi.py --diff [PATH]                    # show how the project differs from the files/issues/PRs
 ./kopi.py --archive [PATH] [--id ID | --match TEXT]  # archive one item (see below)
 ./kopi.py --archive [PATH] [--dry-run] [--force]  # archive open board drafts no longer in TODO.md
+./kopi.py --export todo|inprogress|done [--dry-run]  # add the board's items to TODO.md as [ ] / [~] / [x] entries
 ./kopi.py --list todo|inprogress|done [--local]  # list the project's items by status (or the matching entries in TODO.md)
 ./kopi.py --done ITEM [--dry-run]               # move one board item to Done (ITEM: id or title text)
 ./kopi.py --restore [PATH] [--dry-run] [--id ID]  # unarchive items that --archive archived
@@ -131,6 +132,17 @@ Give `--archive` an item to archive just that one, ignoring the files and the or
 Add `--local` to list entries from the local `TODO.md` instead, one title per line: `--list todo --local` gives the open entries (the `[ ]` checkbox, matching the Todo status on the board), `--list inprogress --local` the `[~]` ones and `--list done --local` the ticked ones (`[x]`). The changelog is not read. `--local` reads the file only, so it needs no GitHub access, no login and no network. It reads `TODO.md` in the current directory.
 
 With `--json`, both forms print an array: `{id, status, title, url?}` for the project and `{status, title}` for the file. Comparing the two lists is a quick way to see where the board and the file disagree; `--diff` does that in full.
+
+## Exporting board items to TODO.md (`--export`)
+
+`kopi --export KIND` is the reverse of `--import`: it looks at the project's items with one status and adds each to the local `TODO.md` if the file doesn't already have it. `todo` writes `- [ ] ...` entries, `inprogress` (or `in-progress`) writes `- [~] ...` and `done` writes `- [x] ...`. Use `--dry-run` to preview. It reads `TODO.md` in the current directory and only writes that file; the board is not changed and nothing is committed.
+
+- An item counts as already present if `TODO.md` has an entry with the same text, or 75%+ shared words (the matching `--update` uses), **in any state**. So an item that is Todo on the board but ticked `[x]` in the file is left ticked, not re-opened (`--diff` shows that mismatch as `ahead`/`behind`).
+- `todo` and `inprogress` entries are added at the end of the `## Open` section. `done` entries are added at the top of `## Done`, newest first, above the existing ones. A section that doesn't exist is created at the end of the file, and a missing `TODO.md` is created.
+- For `done`, the board's changelog items (`[version] ...`) are skipped, as is anything resembling a `CHANGELOG.md` entry (the 40% shared-words rule `--import` uses), because those belong in the changelog. Both count as already present. In practice `--export done` only adds items that were marked Done on the board by hand, by `--done`, or from closed issues/PRs.
+- Items whose title was cut to 100 characters are exported with their full text from the item body.
+- Linked issues and PRs are written as `title (url)`. A later `--update` leaves them to the issue/PR rather than adding a duplicate draft.
+- Running it twice adds nothing the second time. With `--json` it prints `{project, dry_run, file, added, already_present}`.
 
 ## Setting field values (`set`)
 

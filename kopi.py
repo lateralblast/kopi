@@ -17,7 +17,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.5.1"
+__version__ = "0.5.3"
 
 
 class GhError(RuntimeError):
@@ -630,6 +630,79 @@ def cmd_list_kind(args):
         print(f"{r['id']}\t{r['title']}")
 
 
+# --export KIND -> (board status, checkbox mark, TODO.md section, put at the top of the section?)
+EXPORT_KINDS = {"todo": ("Todo", " ", "Open", False), "inprogress": ("In Progress", "~", "Open", False),
+                "in-progress": ("In Progress", "~", "Open", False), "done": ("Done", "x", "Done", True)}
+
+
+def _insert_entries(text, section, lines, top=False):
+    """Add `lines` to the `## section` of TODO.md `text`: at the end of the section, or at the top of its
+    entries when `top` (newest first, as the Done list is kept). The section is created if absent."""
+    src = text.splitlines()
+    head = next((n for n, l in enumerate(src) if re.match(rf"##\s+{section}\b", l, re.I)), None)
+    if head is None:
+        base = text.rstrip("\n")
+        return (base + "\n\n" if base else "# TODO\n\n") + f"## {section}\n\n" + "\n".join(lines) + "\n"
+    end = next((n for n in range(head + 1, len(src)) if src[n].startswith("## ")), len(src))
+    filled = [n for n in range(head + 1, end) if src[n].strip()]
+    if top and filled:
+        src[filled[0]:filled[0]] = lines
+    elif filled:
+        src[filled[-1] + 1:filled[-1] + 1] = lines + ([""] if filled[-1] + 1 == end and end < len(src) else [])
+    else:  # empty section: a blank line after the heading, then the entries, then a blank before any next heading
+        pos = head + 1
+        gap = [] if pos < len(src) and not src[pos].strip() else [""]
+        pos += 1 - len(gap)
+        src[pos:pos] = gap + lines + ([""] if end < len(src) else [])
+    return "\n".join(src) + "\n"
+
+
+def cmd_export(args):
+    """--export KIND: write the project's items with that status into the local TODO.md.
+
+    todo -> `- [ ]` and inprogress -> `- [~]` at the end of `## Open`; done -> `- [x]` at the top of `## Done`.
+    An item is skipped when TODO.md already has a matching entry in any state (same text, or 75%+ shared
+    words, as --update matches), so a ticked entry is not re-opened. For `done`, the board's changelog items
+    (`[version] ...`) and anything resembling a CHANGELOG.md entry are skipped too: those belong in the
+    changelog. Linked issues/PRs are written as `title (url)`. TODO.md is created if missing; the board is
+    not changed.
+    """
+    status, mark, section, top = EXPORT_KINDS[args.export]
+    project, _ = find_project(args)
+    if not project:
+        raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
+    items = run_json("project", "item-list", str(project["number"]), *_owner(args), "--limit", "500")["items"]
+    text = _read("TODO.md")
+    known = [t for _, t in parse_todo(text)]
+    changelog = [e for _, e in parse_changelog(_read("CHANGELOG.md"))] if status == "Done" else []
+    new, skipped = [], 0  # [(entry text, url or None)]
+    for item in items:
+        if item.get("status") != status:
+            continue
+        body = ((item.get("content") or {}).get("body") or "").strip()
+        entry = body if item["title"].endswith("…") and body and "\n" not in body else item["title"]
+        if (status == "Done" and CHANGELOG_TITLE.match(item["title"])) or any(similar(entry, e) for e in changelog) \
+                or any(entry == k or similar(entry, k, 0.75) for k in known + [e for e, _ in new]):
+            skipped += 1
+        else:
+            new.append((entry, _item_url(item)))
+    added = [e for e, _ in new]
+    lines = [f"- [{mark}] {e}" + (f" ({u})" if u else "") for e, u in new]
+    if top:
+        lines.reverse()  # board order is oldest first; the Done list is kept newest first
+    if added and not args.dry_run:
+        with open("TODO.md", "w") as f:
+            f.write(_insert_entries(text, section, lines, top))
+    if args.json:
+        emit(args, {"project": project["number"], "dry_run": bool(args.dry_run), "file": "TODO.md",
+                    "added": added, "already_present": skipped})
+        return
+    for line in lines:
+        print(f"{'export' if args.dry_run else 'added'}\t{line}")
+    print(("Dry run: " if args.dry_run else "") + f"{len(added)} {args.export} items {'to export' if args.dry_run else 'added'} "
+          f"to TODO.md ({skipped} already present)")
+
+
 def cmd_done(args):
     """Move one board item to Done. ITEM is an item id (PVTI_...) or text matching exactly one title.
 
@@ -978,6 +1051,9 @@ def build_parser():
                    help="print the result as JSON on stdout (status messages are suppressed; warnings stay on stderr)")
     p.add_argument("--list", choices=sorted(LIST_KINDS), metavar="KIND",
                    help="list the project's items of one kind (todo, inprogress, done); with --local, list the matching entries in TODO.md instead")
+    p.add_argument("--export", choices=sorted(EXPORT_KINDS), metavar="KIND",
+                   help="write the project's items of one kind (todo, inprogress, done) into the local TODO.md as "
+                        "[ ] / [~] / [x] entries, skipping any already there")
     p.add_argument("--local", action="store_true", help="with --list: read the local TODO.md instead of the project")
     p.add_argument("--done", metavar="ITEM",
                    help="move one board item to Done: ITEM is an item id or text matching exactly one title "
@@ -1037,15 +1113,15 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done, args.list]
+    modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done, args.list, args.export]
     if not (any(modes) or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list)")
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export)")
     if sum(map(bool, modes)) > 1:
-        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done and --list are mutually exclusive")
+        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list and --export are mutually exclusive")
     if args.local and not args.list:
         parser.error("--local only applies to --list")
     try:
-        # only these modes take a directory/file; --done's and --list's values are not paths
+        # only these modes take a directory/file; --done's, --list's and --export's values are not paths
         path = next((m for m in modes[:8] if m), None)
         args.only = None
         if path:
@@ -1074,7 +1150,7 @@ def main(argv=None):
                 args.owner = "@me"
         handler = next((fn for on, fn in ((args.do_import, cmd_import), (args.update, cmd_update),
                                           (args.diff, cmd_diff), (args.archive, cmd_archive),
-                                          (args.dedupe, cmd_dedupe), (args.squash, cmd_squash), (args.restore, cmd_restore), (args.done, cmd_done), (args.list, cmd_list_kind),
+                                          (args.dedupe, cmd_dedupe), (args.squash, cmd_squash), (args.restore, cmd_restore), (args.done, cmd_done), (args.list, cmd_list_kind), (args.export, cmd_export),
                                           (args.init, cmd_init)) if on), getattr(args, "fn", None))
         handler(args)
     except GhError as e:

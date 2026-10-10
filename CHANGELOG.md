@@ -7,6 +7,21 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-10
+
+### Added
+- `--import issues` (with `--dry-run`, `--json`): read `ISSUES.md` and create a GitHub issue in the repo for each entry that has no matching issue (by link, or by case-insensitive title). Entries under a `## Done` heading are closed after creation. Accepts kopi's own `--export issues` format and hand-written bullets. Documented in `README.md`.
+
+## [0.5.5] - 2026-10-10
+
+### Changed
+- `--export todo`, `--export inprogress` and `--export done` now always create `TODO.md` when it is missing or empty, from a template with the status legend and `## Open` / `## Done` sections, even if there is nothing to export. Before, the file was only created when an entry had to be added, and then without the legend or the other section. `--json` reports `created`. Documented in `README.md`.
+
+## [0.5.4] - 2026-10-10
+
+### Added
+- `--export issues` (with `--dry-run`, `--force`): write the project's issue items to `ISSUES.md`, grouped by board status, replacing the file each time. A file kopi did not generate is not overwritten without `--force`. Documented in `README.md`.
+
 ## [0.5.3] - 2026-10-10
 
 ### Added

@@ -1,6 +1,6 @@
 # kopi
 
-Version: 0.5.3
+Version: 0.5.6
 
 Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -17,11 +17,13 @@ Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI
 ./kopi.py add N --url <issue-or-pr-url>    # or --title "draft item"
 ./kopi.py --init [PATH]                    # ensure the current repo has a project
 ./kopi.py --import [PATH|FILE] [--dry-run] [--force]   # seed the project from CHANGELOG.md, TODO.md, issues and PRs
+./kopi.py --import issues [--dry-run]     # create a GitHub issue for each ISSUES.md entry that has none
 ./kopi.py --update [PATH|FILE] [--dry-run]            # sync CHANGELOG.md / TODO.md changes into the project
 ./kopi.py --diff [PATH]                    # show how the project differs from the files/issues/PRs
 ./kopi.py --archive [PATH] [--id ID | --match TEXT]  # archive one item (see below)
 ./kopi.py --archive [PATH] [--dry-run] [--force]  # archive open board drafts no longer in TODO.md
 ./kopi.py --export todo|inprogress|done [--dry-run]  # add the board's items to TODO.md as [ ] / [~] / [x] entries
+./kopi.py --export issues [--dry-run] [--force]      # write the board's issues to ISSUES.md
 ./kopi.py --list todo|inprogress|done [--local]  # list the project's items by status (or the matching entries in TODO.md)
 ./kopi.py --done ITEM [--dry-run]               # move one board item to Done (ITEM: id or title text)
 ./kopi.py --restore [PATH] [--dry-run] [--id ID]  # unarchive items that --archive archived
@@ -138,11 +140,28 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 `kopi --export KIND` is the reverse of `--import`: it looks at the project's items with one status and adds each to the local `TODO.md` if the file doesn't already have it. `todo` writes `- [ ] ...` entries, `inprogress` (or `in-progress`) writes `- [~] ...` and `done` writes `- [x] ...`. Use `--dry-run` to preview. It reads `TODO.md` in the current directory and only writes that file; the board is not changed and nothing is committed.
 
 - An item counts as already present if `TODO.md` has an entry with the same text, or 75%+ shared words (the matching `--update` uses), **in any state**. So an item that is Todo on the board but ticked `[x]` in the file is left ticked, not re-opened (`--diff` shows that mismatch as `ahead`/`behind`).
-- `todo` and `inprogress` entries are added at the end of the `## Open` section. `done` entries are added at the top of `## Done`, newest first, above the existing ones. A section that doesn't exist is created at the end of the file, and a missing `TODO.md` is created.
+- `todo` and `inprogress` entries are added at the end of the `## Open` section. `done` entries are added at the top of `## Done`, newest first, above the existing ones. A section that doesn't exist is created at the end of the file.
+- If `TODO.md` doesn't exist (or is empty) it is created from a small template (a `# TODO` title, the status legend, and empty `## Open` and `## Done` sections) before the entries are added, **even when there is nothing to export**, so you always end up with the file. `--dry-run` says "Would create TODO.md" and writes nothing; `--json` reports `created`.
 - For `done`, the board's changelog items (`[version] ...`) are skipped, as is anything resembling a `CHANGELOG.md` entry (the 40% shared-words rule `--import` uses), because those belong in the changelog. Both count as already present. In practice `--export done` only adds items that were marked Done on the board by hand, by `--done`, or from closed issues/PRs.
 - Items whose title was cut to 100 characters are exported with their full text from the item body.
 - Linked issues and PRs are written as `title (url)`. A later `--update` leaves them to the issue/PR rather than adding a duplicate draft.
 - Running it twice adds nothing the second time. With `--json` it prints `{project, dry_run, file, added, already_present}`.
+
+### Importing issues from ISSUES.md (`--import issues`)
+
+`kopi --import issues` reads `ISSUES.md` in the current directory and creates a GitHub issue (in the repo's `origin`) for each bullet that has no issue yet. It accepts the lines `--export issues` writes (`- [#3](url) Title (labels)`) and hand-written ones (`- Title`, `- [ ] Title`).
+
+- An entry already exists if its link points at an existing issue or at another repo, or if its title matches an issue's title (case-insensitive, open or closed). Existing issues are left alone.
+- Entries under a `## Done` heading are closed after they are created. Labels are not applied.
+- `--dry-run` lists what would be created. `--json` prints `{repo, dry_run, created: [{title, url?, closed}], existing}`. A directory named `issues` takes precedence over this mode.
+
+### Exporting issues to ISSUES.md (`--export issues`)
+
+`kopi --export issues` writes the project's **issue** items to `ISSUES.md` in the current directory, as a snapshot grouped by board status (Todo, In Progress, Done, then No status), one bullet per issue: `- [#3](url) Title (labels)`. The reference includes the repository (`owner/repo#3`) when the board holds issues from more than one repo. Pull requests and draft items are not included, and the board's status is used, not the issue's open/closed state on GitHub.
+
+- Unlike the `TODO.md` exports, which only add what's missing, this **replaces** `ISSUES.md` each time, so it is always an exact picture of the board. The file starts with a comment line saying so. A file without that line (one you wrote by hand) is never overwritten unless you pass `--force`. Delete the comment line yourself to take over a generated file.
+- If nothing changed the file is left alone ("ISSUES.md is up to date"). `--dry-run` lists the issues without writing, and `--json` prints `{project, dry_run, file, changed, issues}`.
+- The board is not changed. Whether `ISSUES.md` belongs in your repository (or in `.gitignore`) is up to you.
 
 ## Setting field values (`set`)
 

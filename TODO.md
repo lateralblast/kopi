@@ -9,6 +9,9 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] `--import issues` creates GitHub issues from `ISSUES.md` where none exist, with tests.
+- [x] `--export todo|inprogress|done` always creates a missing `TODO.md` from a template, with tests (dry run checked live).
+- [x] `--export issues` to a local `ISSUES.md`, with tests (dry run checked live).
 - [x] `--export inprogress` and `--export done`, with tests (dry runs checked live).
 - [x] `--export todo` flag: add the board's Todo items to TODO.md as unchecked entries, with tests (dry run checked live).
 - [x] `--list inprogress` (project) and `--list inprogress --local` (TODO.md), with tests.

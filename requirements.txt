@@ -1,0 +1,3 @@
+# kopi has no runtime dependencies (it shells out to the gh CLI).
+# This file lists the test dependencies.
+pytest>=9.1.1

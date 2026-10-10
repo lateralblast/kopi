@@ -20,69 +20,69 @@ Version: 0.7.3
 ## Quick start
 
 ```
-gh auth login && gh auth refresh -s project   # once
+gh auth login && gh auth refresh -s project                  # once
 cd ~/code/my-repo
-./kopi.py --import --dry-run                  # see what would be seeded from CHANGELOG.md, TODO.md, issues and PRs
-./kopi.py --import                            # create the project and fill it
-./kopi.py --sync                              # later: keep the board and TODO.md level
-./kopi.py --diff --check                      # or gate CI on them being in sync
-./kopi.py --report                            # how are we doing?
+./kopi.py --import --dry-run                                 # see what would be seeded from CHANGELOG.md, TODO.md, issues and PRs
+./kopi.py --import                                           # create the project and fill it
+./kopi.py --sync                                             # later: keep the board and TODO.md level
+./kopi.py --diff --check                                     # or gate CI on them being in sync
+./kopi.py --report                                           # how are we doing?
 ```
 
 ## Usage
 
 ```
 # Projects
-./kopi.py list [--closed]                                 # number, title, open/closed, linked repo, URL
-./kopi.py create "Title" --repo owner/repo                # create project with title and linked repo
-./kopi.py view N                                          # view project by number
-./kopi.py delete N                                        # delete project by number
-./kopi.py fields N                                        # show project fields by number
-./kopi.py items N                                         # show project items by number
-./kopi.py set N ITEM --field NAME (--value V | --clear)   # set a field value on one item
-./kopi.py add N --url <issue-or-pr-url>                   # or --title "draft item"
+./kopi.py list [--closed]                                    # number, title, open/closed, linked repo, URL
+./kopi.py create "Title" --repo owner/repo                   # create project with title and linked repo
+./kopi.py view N                                             # view project by number
+./kopi.py delete N                                           # delete project by number
+./kopi.py fields N                                           # show project fields by number
+./kopi.py items N                                            # show project items by number
+./kopi.py set N ITEM --field NAME (--value V | --clear)      # set a field value on one item
+./kopi.py add N --url <issue-or-pr-url>                      # or --title "draft item"
 
 # Files to board
-./kopi.py --init [PATH]                                   # ensure the current repo has a project
-./kopi.py --import [PATH|FILE] [--dry-run] [--force]      # seed the project from CHANGELOG.md, TODO.md, issues and PRs
-./kopi.py --update [PATH|FILE] [--dry-run]                # sync CHANGELOG.md / TODO.md / issue / PR changes into the project
-./kopi.py --diff [PATH] [--check]                         # show how the project differs from the files (--check: exit 2 if it does)
-./kopi.py --sync [PATH] [--dry-run]                       # --update then --squash: files/GitHub -> board, Done on board -> ticks in TODO.md
-./kopi.py --import|--update --code-comments --releases    # also track TODO:/FIXME: comments and git tags (opt-in)
+./kopi.py --init [PATH]                                      # ensure the current repo has a project
+./kopi.py --import [PATH|FILE] [--dry-run] [--force]         # seed the project from CHANGELOG.md, TODO.md, issues and PRs
+./kopi.py --update [PATH|FILE] [--dry-run]                   # sync CHANGELOG.md / TODO.md / issue / PR changes into the project
+./kopi.py --diff [PATH] [--check]                            # show how the project differs from the files (--check: exit 2 if it does)
+./kopi.py --sync [PATH] [--dry-run]                          # --update then --squash: files/GitHub -> board, Done on board -> ticks in TODO.md
+./kopi.py --import|--update --code-comments --releases       # also track TODO:/FIXME: comments and git tags (opt-in)
 
 # Board to files
-./kopi.py --export todo|inprogress|done [--dry-run]       # add the board's items to TODO.md as [ ] / [~] / [x] entries
-./kopi.py --export issues [--dry-run] [--force]           # write the board's issues to ISSUES.md
-./kopi.py --export prs [--dry-run] [--force]              # write the board's pull requests to PRS.md
-./kopi.py --squash [PATH] [--dry-run] [--force]           # tick TODO.md entries that are Done on the board; refresh ISSUES.md
-./kopi.py --import issues [--dry-run]                     # create a GitHub issue for each ISSUES.md entry that has none
+./kopi.py --export todo|inprogress|done [--dry-run]          # add the board's items to TODO.md as [ ] / [~] / [x] entries
+./kopi.py --export issues [--dry-run] [--force]              # write the board's issues to ISSUES.md
+./kopi.py --export prs [--dry-run] [--force]                 # write the board's pull requests to PRS.md
+./kopi.py --squash [PATH] [--dry-run] [--force]              # tick TODO.md entries that are Done on the board; refresh ISSUES.md
+./kopi.py --import issues [--dry-run]                        # create a GitHub issue for each ISSUES.md entry that has none
 
 # Working on items
-./kopi.py --list todo|inprogress|done [--local]           # list the project's items by status (or the matching entries in TODO.md)
-./kopi.py --list issues|prs [--local]                     # list the project's issue / PR items (or the entries in ISSUES.md / PRS.md)
-./kopi.py --done ITEM [--dry-run]                         # move one board item to Done (ITEM: id or title text)
-./kopi.py --start ITEM [--dry-run]                        # move one board item to In Progress
-./kopi.py --move ITEM STATUS [--dry-run]                  # move one board item to any Status (Todo, In Progress, Done, ...)
-./kopi.py --open TITLE [--body T] [--label L] [--dry-run] # create a GitHub issue and add it to the project as Todo
-./kopi.py --open|--reopen|--close ... --local             # only edit the local ISSUES.md, nothing on GitHub
-./kopi.py --close ISSUE [--dry-run]                       # close a GitHub issue (ISSUE: number, URL or title text)
-./kopi.py --reopen ISSUE [--dry-run]                      # reopen a closed issue and put it back on the project as Todo
-./kopi.py --promote ITEM [--dry-run]                      # turn one draft board item into a real issue
+./kopi.py --list todo|inprogress|done [--local]              # list the project's items by status (or the matching entries in TODO.md)
+./kopi.py --list issues|prs [--local]                        # list the project's issue / PR items (or the entries in ISSUES.md / PRS.md)
+./kopi.py --done ITEM [--dry-run]                            # move one board item to Done (ITEM: id or title text)
+./kopi.py --start ITEM [--dry-run]                           # move one board item to In Progress
+./kopi.py --move ITEM STATUS [--dry-run]                     # move one board item to any Status (Todo, In Progress, Done, ...)
+./kopi.py --open TITLE [--body T] [--label L] [--dry-run]    # create a GitHub issue and add it to the project as Todo
+./kopi.py --open|--reopen|--close ... --local                # only edit the local ISSUES.md, nothing on GitHub
+./kopi.py --close ISSUE [--dry-run]                          # close a GitHub issue (ISSUE: number, URL or title text)
+./kopi.py --reopen ISSUE [--dry-run]                         # reopen a closed issue and put it back on the project as Todo
+./kopi.py --promote ITEM [--dry-run]                         # turn one draft board item into a real issue
 ./kopi.py --promote-all [todo|inprogress] [--dry-run|--yes]  # ...or every open draft (needs --yes)
-./kopi.py --archive [PATH] [--dry-run] [--force]          # archive open board drafts no longer in TODO.md
-./kopi.py --archive [PATH] [--id ID | --match TEXT]       # archive one item
-./kopi.py --restore [PATH] [--dry-run] [--id ID | --all]  # unarchive items that --archive archived (or all archived)
-./kopi.py --dedupe [PATH] [--dry-run]                     # delete duplicate board items
+./kopi.py --archive [PATH] [--dry-run] [--force]             # archive open board drafts no longer in TODO.md
+./kopi.py --archive [PATH] [--id ID | --match TEXT]          # archive one item
+./kopi.py --restore [PATH] [--dry-run] [--id ID | --all]     # unarchive items that --archive archived (or all archived)
+./kopi.py --dedupe [PATH] [--dry-run]                        # delete duplicate board items
 
 # Reports
-./kopi.py --report [text|markdown]                        # progress summary of the project
-./kopi.py --rollup [DIR ...]                              # status counts across several repos' projects (or all open projects)
+./kopi.py --report [text|markdown]                           # progress summary of the project
+./kopi.py --rollup [DIR ...]                                 # status counts across several repos' projects (or all open projects)
 
 # Options for any of the above
-./kopi.py --owner NAME ...                                # user or org that owns the project (default: the repo's owner)
-./kopi.py --status-map "Todo=Backlog,Done=Shipped" ...    # name the board's Status options if they differ
-./kopi.py --config FILE ...                               # read settings from FILE instead of ./.kopi.toml
-./kopi.py --json <command or mode>                        # print the result as JSON
+./kopi.py --owner NAME ...                                   # user or org that owns the project (default: the repo's owner)
+./kopi.py --status-map "Todo=Backlog,Done=Shipped" ...       # name the board's Status options if they differ
+./kopi.py --config FILE ...                                  # read settings from FILE instead of ./.kopi.toml
+./kopi.py --json <command or mode>                           # print the result as JSON
 ./kopi.py --version
 ```
 

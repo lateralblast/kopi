@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.8.0
+Version: 0.8.2
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -16,6 +16,7 @@ Version: 0.8.0
 - [Board to files](#board-to-files): [`--export`](#exporting-board-items-to-todomd---export), [`--squash`](#ticking-todomd-from-the-board---squash), [issues and PRs](#issues-and-prs)
 - [Working on items](#working-on-items): [`--list`](#listing-items---list), [`--done` / `--start` / `--move`](#moving-items---done---start---move), [`--promote`](#promoting-drafts-to-issues---promote---promote-all), [`--open`](#opening-an-issue---open), [`--close`](#closing-an-issue---close), [`--reopen`](#reopening-an-issue---reopen), [`--archive`](#archiving-stale-items---archive), [`--restore`](#restoring-archived-items---restore), [`--dedupe`](#removing-duplicates---dedupe)
 - [Roadmap dates](#roadmap-dates): [`--setup-dates`, `--backfill-dates`](#roadmap-dates), [`--gantt`](#gantt-chart-of-the-roadmap---gantt)
+- [Releases](#creating-a-release---release)
 - [Reports](#reports): [`--report`](#progress-report---report), [`--rollup`](#roll-up-across-projects---rollup)
 
 ## Quick start
@@ -79,6 +80,7 @@ cd ~/code/my-repo
 ./kopi.py --setup-dates [--dry-run]                          # create the Started / Completed date fields (--import / --update do it too)
 ./kopi.py --backfill-dates [--dry-run]                       # fill the missing Started / Completed dates (--import / --update do it too; --no-dates skips)
 ./kopi.py --gantt [releases|items] [--to FILE]               # draw the Roadmap as a Gantt chart (ROADMAP.md / .svg / .mmd)
+./kopi.py --release [--tag TAG] [--draft] [--dry-run]        # create a GitHub release at the last commit (notes from CHANGELOG.md)
 ./kopi.py --report [text|markdown]                           # progress summary of the project
 ./kopi.py --rollup [DIR ...]                                 # status counts across several repos' projects (or all open projects)
 
@@ -166,7 +168,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--open`: `{project, repo, dry_run, created: {title, url, number, item_id} | null}` (with `--local`: `{file, dry_run, created: {title, labels}}`); `--close`: `{repo, dry_run, closed: [{number, title, url}]}` (with `--local`: `{file, dry_run, closed: [{title, number?, url?}]}`); `--reopen`: `{repo, dry_run, reopened: [{number, title, url}], board: {project?, action}}` (`action` is `moved`, `added`, `unchanged` or `skipped`); `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}], annotated?}`; `--promote-all`: the same plus `failed: [{title, id, error}]`; `annotated` (with `--annotate`) is `[{title, number, entry}]`.
 - `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--dedupe`: `{project, dry_run, deleted}`.
 - `--import`, `--update`, `--done`, `--start` and `--move` also report `dates: [{title, field, date}]` when they set any. `--setup-dates`: `{project, dry_run, created: [{field}], existing: [{field, type}]}`; `--backfill-dates`: `{project, dry_run, set: [{title, field, date}]}`.
-- `--gantt`: `{project, view, file, dry_run, changed, skipped, tasks: [{section, name, start, end, state}]}`.
+- `--gantt`: `{project, view, file, dry_run, changed, skipped, tasks: [{section, name, start, end, state}]}`; `--release`: `{repo, tag, target, subject, dry_run, draft, notes: "changelog" | "generated", existing, url}`.
 - `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
 
 ### Limits
@@ -525,6 +527,25 @@ gantt
     v0.4.8 to v0.4.9 (2 releases) :done, 2025-06-22, 2025-09-06
     v0.5.0 :done, 2025-09-06, 2025-09-08
 ```
+
+## Releases
+
+### Creating a release (`--release`)
+
+`kopi --release` creates a GitHub release at the **last commit** of the repo you are in, so publishing a version is one command once the work is committed and pushed:
+
+```
+kopi --release --dry-run         # see the tag, commit and notes it would use
+kopi --release                   # create it
+kopi --release --tag v1.2.0      # name the tag yourself
+kopi --release --draft           # create it as a draft to review on GitHub first
+```
+
+- **Tag.** By default the version number of the newest dated `## [version] - date` heading in `CHANGELOG.md` (the latest date wins; undated `[Unreleased]` is ignored), written as it appears there, so `1.2.3`. Use `--tag TAG` to choose another, for example `--tag v1.2.3` if your repo's tags have a `v` prefix. A tag name cannot contain whitespace.
+- **Notes.** The `CHANGELOG.md` section for that version (the entries up to the next heading; a leading `v` on `--tag` is ignored when looking it up). If there is none, GitHub's generated release notes are used.
+- **Commit.** The release is created on `HEAD` (the last commit) with GitHub creating the tag there. The commit has to be on GitHub already, so push first; kopi does not push. It does not create a local tag (run `git fetch --tags` to get it).
+- **Safety.** A release that already exists is reported and left alone. A tag that already exists on GitHub on a *different* commit is an error, while one already on the last commit (for example pushed first) is used. Uncommitted changes in your working tree get a warning, because they are not part of the release: commit them first, or the release will not contain what the changelog describes.
+- **With the board.** After a release, `kopi --update --releases` would add a `[release]` item for the tag, but a tag whose version already has a changelog entry is skipped, so the board is not duplicated.
 
 ## Reports
 

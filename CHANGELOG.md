@@ -7,6 +7,16 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-11
+
+### Changed
+- `--release` no longer takes a tag as its value: the new `--tag TAG` flag (only with `--release`) names it. By default the tag is now the plain version number from `CHANGELOG.md` (`1.2.3`), where `--release` used to add a `v` unless the repo's existing tags had none; use `--tag v1.2.3` for a `v` tag. A leading `v` on `--tag` is ignored when looking up the changelog section for the notes, and a tag name containing whitespace is rejected. Documented in `README.md`.
+
+## [0.8.1] - 2026-10-11
+
+### Added
+- `--release [TAG]` (with `--draft`, `--dry-run`, `--json`): create a GitHub release at the last commit (`HEAD`). `TAG` defaults to the newest dated version in `CHANGELOG.md` (the latest date wins), written `v1.2.3`, or `1.2.3` if the repo's existing tags have no `v`. The notes are that version's `CHANGELOG.md` section, or GitHub's generated notes if there is none. The commit must already be on GitHub. A release that already exists is reported and left alone, a tag that already exists on another commit is an error (one already on the last commit is used), and uncommitted changes are warned about because they are not in the release. Documented in `README.md`.
+
 ## [0.8.0] - 2026-10-11
 
 ### Added

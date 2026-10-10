@@ -7,6 +7,8 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] `--tag TAG` for `--release`, defaulting to the plain changelog version number, with tests.
+- [x] `--release [TAG]` creates a GitHub release at the last commit with the changelog section as notes, with tests; dry run checked live.
 - [x] `--gantt` Gantt chart of the Roadmap (Mermaid in Markdown, raw Mermaid or SVG; per-release and per-item views), with tests; rendered and checked on the druid board.
 - [x] Batch item creation, status and date writes in `--import` / `--update` and report progress (51-item import: ~3 minutes -> 52 seconds, identical result), with tests.
 - [x] `--import` / `--update` create the date fields and backfill dates on every item (with `--no-dates` and `[dates] enabled` to opt out), with tests.

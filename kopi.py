@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.8.0"
+__version__ = "0.8.2"
 
 
 class GhError(RuntimeError):
@@ -2356,6 +2356,106 @@ def cmd_gantt(args):
                 "tasks": [{**t, "start": t["start"].isoformat(), "end": t["end"].isoformat()} for t in tasks]})
 
 
+# --- --release: a GitHub release at the last commit ----------------------------------------------------------------
+def version_key(version):
+    return tuple(int(p) if p.isdigit() else 0 for p in re.split(r"[.\-+]", version))
+
+
+def latest_release_version(changelog):
+    """The newest dated `## [version] - date` in a changelog (latest date, then highest version), or None."""
+    dated = changelog_release_dates(changelog)
+    return max(dated, key=lambda v: (dated[v], version_key(v))) if dated else None
+
+
+def changelog_section(changelog, version):
+    """The body of `## [version]` in a changelog (up to the next `## [`), stripped; "" if there is none."""
+    m = re.search(r"^## \[" + re.escape(version) + r"\][^\n]*\n(.*?)(?=^## \[|\Z)", changelog, re.M | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def head_commit():
+    """(sha, subject) of the last commit in the current directory, or (None, None)."""
+    return _git_first_line("rev-parse", "HEAD"), _git_first_line("log", "-1", "--format=%s")
+
+
+def git_dirty():
+    """True if the working tree has uncommitted changes."""
+    try:
+        proc = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def remote_tag_commit(slug, tag):
+    """The commit sha a tag points at on GitHub (looking through an annotated tag), or None if it has no such tag."""
+    try:
+        kind, sha = run("api", f"repos/{slug}/git/ref/tags/{tag}", "--jq", '.object | "\\(.type) \\(.sha)"').split()
+    except GhError:
+        return None
+    return run("api", f"repos/{slug}/git/tags/{sha}", "--jq", ".object.sha").strip() if kind == "tag" else sha
+
+
+def cmd_release(args):
+    """--release [--tag TAG]: create a GitHub release at the last commit (HEAD).
+
+    The tag is the newest changelog version number (`1.2.3`) unless --tag names another. The release's notes are the
+    CHANGELOG.md section for that version (a leading `v` on the tag is ignored), or GitHub's generated notes if there
+    is none; --draft makes it a draft.
+    The commit must already be on GitHub (it is pushed first, not by kopi). A release that already exists is reported
+    and left alone; a tag that already exists on another commit is an error. Uncommitted changes are warned about
+    and are not in the release."""
+    repo = git_repo()
+    if not repo:
+        raise GhError("--release must be run inside a git repo with a github.com origin remote")
+    slug = "/".join(repo)
+    sha, subject = head_commit()
+    if not sha:
+        raise GhError("no commits to release")
+    changelog = _read("CHANGELOG.md")
+    if args.tag:
+        tag = args.tag.strip()
+        if not tag or re.search(r"\s", tag):
+            raise GhError(f"{args.tag!r} is not a usable tag name")
+        version = tag.lstrip("vV")
+    else:
+        version = latest_release_version(changelog)
+        if not version:
+            raise GhError("no dated `## [version] - date` heading in CHANGELOG.md to name the release after; give a tag: --tag TAG")
+        tag = version
+    notes = changelog_section(changelog, version)
+    report = {"repo": slug, "tag": tag, "target": sha, "subject": subject, "dry_run": bool(args.dry_run), "draft": bool(args.draft),
+              "notes": "changelog" if notes else "generated", "existing": False, "url": None}
+    try:
+        existing = json.loads(run("release", "view", tag, "--repo", slug, "--json", "url,isDraft"))
+        report.update(existing=True, url=existing["url"])
+        say(args, f"Already released: {tag} {existing['url']}")
+        emit(args, report)
+        return
+    except GhError:
+        pass  # no such release: the usual case
+    try:
+        run("api", f"repos/{slug}/commits/{sha}", "--jq", ".sha")
+    except GhError:
+        raise GhError(f"commit {sha[:7]} is not on GitHub yet; push it first")
+    tagged = remote_tag_commit(slug, tag)
+    if tagged and tagged != sha:
+        raise GhError(f"tag {tag} already exists on GitHub at {tagged[:7]}, not the last commit {sha[:7]}; choose another with --tag TAG")
+    if git_dirty():
+        print("warning: uncommitted changes are not in the release (it is made from the last commit)", file=sys.stderr)
+    if args.dry_run:
+        say(args, f"release\t{tag}\t{sha[:7]} {subject}\tnotes: {report['notes']}" + ("\tdraft" if args.draft else ""))
+        emit(args, report)
+        return
+    cmd = ["release", "create", tag, "--repo", slug, "--target", sha, "--title", tag]
+    cmd += ["--notes", notes] if notes else ["--generate-notes"]
+    if args.draft:
+        cmd.append("--draft")
+    report["url"] = run(*cmd).strip().splitlines()[-1]
+    say(args, f"Released {tag} at {sha[:7]} ({subject}): {report['url']}")
+    emit(args, report)
+
+
 def cmd_sync(args):
     """--sync: bring the board and the files level in both directions: --update (files and GitHub -> board), then
     --squash (board -> TODO.md ticks). The --export modes stay separate because they write new files/entries.
@@ -2800,6 +2900,11 @@ def build_parser():
     p.add_argument("--to", metavar="FILE",
                    help="with --gantt: where to write the chart; .svg for an image, .mmd for raw Mermaid, else Markdown "
                         "with a Mermaid block; - prints it")
+    p.add_argument("--release", action="store_true",
+                   help="create a GitHub release at the last commit: the tag is the newest changelog version number "
+                        "(see --tag) and the notes are its CHANGELOG.md section")
+    p.add_argument("--tag", metavar="TAG", help="with --release: the tag name, instead of the newest changelog version number")
+    p.add_argument("--draft", action="store_true", help="with --release: create it as a draft")
     p.add_argument("--setup-dates", action="store_true",
                    help="create the Started and Completed date fields on the project if missing (for its Roadmap view)")
     p.add_argument("--backfill-dates", action="store_true",
@@ -2819,7 +2924,7 @@ def build_parser():
                    help="with --restore: restore every archived item GitHub reports, not just those kopi archived")
     p.add_argument("--match", metavar="TEXT",
                    help="with --archive: archive the one item whose title contains TEXT (case-insensitive; error if not exactly one)")
-    p.add_argument("--dry-run", action="store_true", help="with --import/--update/--sync/--archive/--dedupe/--squash/--restore/--done/--start/--move/--close/--promote/--promote-all/--open/--reopen: print what would change")
+    p.add_argument("--dry-run", action="store_true", help="with --import/--update/--sync/--archive/--dedupe/--squash/--restore/--done/--start/--move/--close/--promote/--promote-all/--open/--reopen/--release: print what would change")
     p.add_argument("--force", action="store_true",
                    help="with --import: import even if the project has items; with --archive: also archive items that look reworded; "
                         "with --export issues/prs, --squash and --sync: overwrite an ISSUES.md/PRS.md kopi did not generate; "
@@ -2875,15 +2980,17 @@ def main(argv=None):
     modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done, args.list, args.export,
              args.sync, args.start, args.move, args.close, args.report,
              args.rollup is not None, args.promote, args.promote_all, args.open, args.reopen, args.setup_dates,
-             args.backfill_dates, args.gantt]
+             args.backfill_dates, args.gantt, args.release]
     if not (any(modes) or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close / --report / --rollup / --promote / --promote-all / --open / --reopen / --setup-dates / --backfill-dates / --gantt)")
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close / --report / --rollup / --promote / --promote-all / --open / --reopen / --setup-dates / --backfill-dates / --gantt / --release)")
     if sum(map(bool, modes)) > 1:
-        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move, --close, --report, --rollup, --promote, --promote-all, --open, --reopen, --setup-dates, --backfill-dates and --gantt are mutually exclusive")
+        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move, --close, --report, --rollup, --promote, --promote-all, --open, --reopen, --setup-dates, --backfill-dates, --gantt and --release are mutually exclusive")
     if (args.body is not None or args.label) and not args.open:
         parser.error("--body and --label only apply to --open")
     if args.annotate and not (args.promote or args.promote_all):
         parser.error("--annotate only applies to --promote and --promote-all")
+    if (args.draft or args.tag) and not args.release:
+        parser.error("--draft and --tag only apply to --release")
     if args.to and not args.gantt:
         parser.error("--to only applies to --gantt")
     if args.yes and not args.promote_all:
@@ -2936,7 +3043,7 @@ def main(argv=None):
                                           (args.init, cmd_init), (args.sync, cmd_sync), (args.start, cmd_start),
                                           (args.move, cmd_move), (args.close, cmd_close), (args.report, cmd_report), (args.rollup is not None, cmd_rollup),
                                           (args.promote, cmd_promote), (args.promote_all, cmd_promote_all), (args.open, cmd_open), (args.reopen, cmd_reopen), (args.setup_dates, cmd_setup_dates),
-                                          (args.backfill_dates, cmd_backfill_dates), (args.gantt, cmd_gantt)) if on), getattr(args, "fn", None))
+                                          (args.backfill_dates, cmd_backfill_dates), (args.gantt, cmd_gantt), (args.release, cmd_release)) if on), getattr(args, "fn", None))
         rc = handler(args)
         return rc if isinstance(rc, int) else 0
     except GhError as e:

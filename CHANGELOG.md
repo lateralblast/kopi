@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-10-11
+
+### Changed
+- `--import` and `--update` (and so `--sync`) now handle the Roadmap dates completely: if the board lacks the Started and Completed date fields they are created, and every item on the board that is missing a date gets it (not only the items just added or moved), including when the board is otherwise up to date. Existing values are still never overwritten. Added `--no-dates` to skip this for a run and `enabled = false` under `[dates]` in `.kopi.toml` to turn it off for a repo (which also stops `--start` / `--done` / `--move` stamping dates). `--dry-run` does not create fields or write dates. `--import` / `--update` `--json` output gains `date_fields_created` when fields were created. Documented in `README.md`.
+
 ## [0.7.7] - 2026-10-11
 
 ### Added

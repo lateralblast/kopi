@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.7.7"
+__version__ = "0.7.8"
 
 
 class GhError(RuntimeError):
@@ -167,7 +167,7 @@ CONFIG_FILE = ".kopi.toml"
 CONFIG_KEYS = {"owner": str, "project": str, "status": dict, "sources": dict, "comments": dict, "repos": list, "dates": dict}
 SOURCES_KEYS = {"code_comments": bool, "releases": bool}
 COMMENTS_KEYS = {"tags": list, "include": list, "exclude": list}
-DATES_KEYS = {"started": str, "completed": str}
+DATES_KEYS = {"started": str, "completed": str, "enabled": bool}
 
 
 def _toml_value(raw):
@@ -658,6 +658,12 @@ DEFAULT_DATE_FIELDS = {"started": "Started", "completed": "Completed"}
 DATE_BATCH = 20  # field updates per GraphQL request
 
 
+def dates_enabled(args):
+    """False under --no-dates or `[dates] enabled = false` in .kopi.toml: kopi then leaves the date fields alone."""
+    cfg = (getattr(args, "config_data", None) or {}).get("dates") or {}
+    return not getattr(args, "no_dates", False) and cfg.get("enabled", True) is not False
+
+
 def date_field_names(args):
     """{"started": name, "completed": name}: the board's date field names (`[dates]` in .kopi.toml, else the defaults)."""
     cfg = (getattr(args, "config_data", None) or {}).get("dates") or {}
@@ -744,21 +750,35 @@ class DateWriter:
     Only fields that exist on the board as DATE fields (named by date_field_names) are used, so a board without
     them is left alone (falsy writer), and a value is only written where the item has none."""
 
-    def __init__(self, args, number):
+    def __init__(self, args, number, ignore_disabled=False):
         self.args, self.number, self.queue = args, number, []
         self.names = date_field_names(args)
+        self.fields, self.missing, self.project_id = {}, [], None
+        if not (ignore_disabled or dates_enabled(args)):
+            return
         self.project_id = run_json("project", "view", str(number), *_owner(args))["id"]
         nodes = (graphql(FIELDS_QUERY, id=self.project_id).get("data", {}).get("node") or {}).get("fields", {}).get("nodes", [])
-        self.fields = {}
         for key, name in self.names.items():
             field = next((f for f in nodes if (f.get("name") or "").lower() == name.lower()), None)
             if field and field.get("dataType") == "DATE":
                 self.fields[key] = field
             elif field:
                 print(f"warning: field {field['name']!r} is {field.get('dataType')}, not a date field; skipped", file=sys.stderr)
+            else:
+                self.missing.append(name)
 
     def __bool__(self):
         return bool(self.fields)
+
+    def create_missing(self, dry_run=False):
+        """Create the date fields the board lacks (gh project field-create); returns their names. Say what happened."""
+        for name in self.missing:
+            if dry_run:
+                say(self.args, f"create\t{name}\tDATE")
+            else:
+                run("project", "field-create", str(self.number), *_owner(self.args), "--name", name, "--data-type", "DATE")
+                say(self.args, f"Created date field {name}")
+        return list(self.missing)
 
     def want(self, item, started=None, completed=None):
         """Queue the dates for `item` (a board item dict, whose own values are honoured: nothing is overwritten)."""
@@ -784,11 +804,11 @@ class DateWriter:
         return done
 
 
-def write_dates(args, number, items, changelog):
+def write_dates(args, number, items, changelog, writer=None):
     """Set the Started / Completed dates of `items` (board-item dicts) from what is known about each; returns what was set.
 
     GitHub dates are fetched when some items are issues/PRs. A board without the date fields: no-op."""
-    writer = DateWriter(args, number)
+    writer = writer or DateWriter(args, number)
     if not writer:
         return []
     repo = git_repo() if any(_item_url(i) for i in items) else None
@@ -796,6 +816,19 @@ def write_dates(args, number, items, changelog):
     for item in items:
         writer.want(item, *resolve_dates(ctx, item))
     return writer.flush()
+
+
+def sync_dates(args, number, items, changelog):
+    """After --import / --update: create the date fields if the board lacks them, then fill in the missing dates of
+    `items` (every item on the board, with its post-update status). Returns (dates set, fields created).
+    Off under --no-dates or `[dates] enabled = false`."""
+    if not dates_enabled(args):
+        return [], []
+    writer = DateWriter(args, number)
+    created = writer.create_missing()
+    if created:
+        writer = DateWriter(args, number)  # re-read the board now that the fields exist
+    return write_dates(args, number, items, changelog, writer=writer), created
 
 
 def stamp_dates(args, number, item, target):
@@ -817,25 +850,12 @@ def cmd_setup_dates(args):
     project, _ = find_project(args)
     if not project:
         raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
-    number = project["number"]
-    names = date_field_names(args)
-    project_id = run_json("project", "view", str(number), *_owner(args))["id"]
-    nodes = (graphql(FIELDS_QUERY, id=project_id).get("data", {}).get("node") or {}).get("fields", {}).get("nodes", [])
-    have = {(f.get("name") or "").lower(): f for f in nodes}
-    report = {"project": number, "dry_run": bool(args.dry_run), "created": [], "existing": []}
-    for name in names.values():
-        field = have.get(name.lower())
-        if field:
-            report["existing"].append({"field": field["name"], "type": field.get("dataType")})
-            say(args, f"exists\t{field['name']}\t{field.get('dataType')}")
-        elif args.dry_run:
-            report["created"].append({"field": name})
-            say(args, f"create\t{name}\tDATE")
-        else:
-            run("project", "field-create", str(number), *_owner(args), "--name", name, "--data-type", "DATE")
-            report["created"].append({"field": name})
-            say(args, f"Created date field {name}")
-    emit(args, report)
+    writer = DateWriter(args, project["number"], ignore_disabled=True)
+    for key, field in writer.fields.items():
+        say(args, f"exists\t{field['name']}\tDATE")
+    created = writer.create_missing(dry_run=bool(args.dry_run))
+    emit(args, {"project": project["number"], "dry_run": bool(args.dry_run), "created": [{"field": n} for n in created],
+                "existing": [{"field": f["name"], "type": f["dataType"]} for f in writer.fields.values()]})
 
 
 def cmd_backfill_dates(args):
@@ -845,7 +865,7 @@ def cmd_backfill_dates(args):
     if not project:
         raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
     number = project["number"]
-    writer = DateWriter(args, number)
+    writer = DateWriter(args, number, ignore_disabled=True)
     if not writer:
         raise GhError("the project has no Started / Completed date fields; run --setup-dates first")
     items = board_items(args, number)
@@ -902,9 +922,10 @@ def cmd_import(args):
     wait_for_items(args, number, created)
     made = [{"id": i, "title": t, "status": st, "content": {"body": b}} for i, (st, t, b) in zip(created, plan)]
     made += [{"id": i, "title": t, "status": st, "content": {"url": u}} for i, (st, t, u) in zip(created[len(plan):], linked)]
-    dates = write_dates(args, number, made, changelog)
+    dates, fields = sync_dates(args, number, made, changelog)
     say(args, f"Imported {total} items into project #{number}" + (f" ({len(dates)} dates set)" if dates else ""))
-    emit(args, {"project": number, "dry_run": False, "imported": total, **({"dates": dates} if dates else {})})
+    emit(args, {"project": number, "dry_run": False, "imported": total, **({"dates": dates} if dates else {}),
+                **({"date_fields_created": fields} if fields else {})})
 
 
 RANK = {"Todo": 0, "In Progress": 1, "Done": 2}
@@ -1038,8 +1059,9 @@ def cmd_update(args):
         print(f"Dry run: {len(adds) + len(link_adds)} to add, {len(moves)} to move in project #{number}")
         return
     if not adds and not link_adds and not moves:
-        say(args, f"Project #{number} is up to date")
-        emit(args, report)
+        dates, fields = sync_dates(args, number, p.items, p.changelog)
+        say(args, f"Project #{number} is up to date" + (f" ({len(dates)} dates set)" if dates else ""))
+        emit(args, {**report, **({"dates": dates} if dates else {}), **({"date_fields_created": fields} if fields else {})})
         return
     set_status = _status_setter(args, number,
                                 [st for st, *_ in adds + link_adds] + [new for _, _, new, _ in moves])
@@ -1056,11 +1078,12 @@ def cmd_update(args):
     wait_for_items(args, number, created)
     made = [{"id": i, "title": t, "status": st, "content": {"body": b}} for i, (st, t, b) in zip(created, adds)]
     made += [{"id": i, "title": t, "status": st, "content": {"url": u}} for i, (st, t, u) in zip(created[len(adds):], link_adds)]
-    made += [{**item, "status": new} for item, _, new, _ in moves if new == "Done"]
-    dates = write_dates(args, number, made, p.changelog)
+    moved = {item["id"]: new for item, _, new, _ in moves}
+    board = [{**i, "status": moved.get(i["id"], i.get("status"))} for i in p.items] + made   # every item, as it now stands
+    dates, fields = sync_dates(args, number, board, p.changelog)
     say(args, f"Updated project #{number}: {len(adds) + len(link_adds)} added, {len(moves)} moved"
         + (f", {len(dates)} dates set" if dates else ""))
-    emit(args, {**report, **({"dates": dates} if dates else {})})
+    emit(args, {**report, **({"dates": dates} if dates else {}), **({"date_fields_created": fields} if fields else {})})
 
 
 def diff_summary(p):
@@ -2519,6 +2542,8 @@ def build_parser():
     p.add_argument("--reopen", metavar="ISSUE",
                    help="reopen a closed issue in the current repo and put it back on the project as Todo: ISSUE is a "
                         "number, an issue URL, or text matching exactly one closed issue's title")
+    p.add_argument("--no-dates", action="store_true",
+                   help="with --import / --update: do not create or fill the Started / Completed date fields this run")
     p.add_argument("--setup-dates", action="store_true",
                    help="create the Started and Completed date fields on the project if missing (for its Roadmap view)")
     p.add_argument("--backfill-dates", action="store_true",

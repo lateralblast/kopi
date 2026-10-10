@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.7.7
+Version: 0.7.8
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -76,8 +76,8 @@ cd ~/code/my-repo
 ./kopi.py --dedupe [PATH] [--dry-run]                        # delete duplicate board items
 
 # Reports
-./kopi.py --setup-dates [--dry-run]                          # create the Started / Completed date fields (for the Roadmap view)
-./kopi.py --backfill-dates [--dry-run]                       # fill the missing Started / Completed dates on existing items
+./kopi.py --setup-dates [--dry-run]                          # create the Started / Completed date fields (--import / --update do it too)
+./kopi.py --backfill-dates [--dry-run]                       # fill the missing Started / Completed dates (--import / --update do it too; --no-dates skips)
 ./kopi.py --report [text|markdown]                           # progress summary of the project
 ./kopi.py --rollup [DIR ...]                                 # status counts across several repos' projects (or all open projects)
 
@@ -123,6 +123,7 @@ releases = true
 [dates]                       # names of the Roadmap date fields (these are the defaults)
 started = "Started"
 completed = "Completed"
+enabled = true                # false: never create or fill the date fields
 
 [comments]                    # tuning of the code-comment scan
 tags = ["TODO", "FIXME", "HACK"]
@@ -393,9 +394,9 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 
 A GitHub project can show its items on a **Roadmap** view, plotted by date fields. kopi can fill two date fields, **Started** and **Completed**, so the Roadmap shows your history (every changelog release) as well as what is in flight.
 
-1. **Create the fields once:** `kopi --setup-dates` (add `--dry-run` to preview). It creates DATE fields named Started and Completed if they are missing; use `[dates]` in `.kopi.toml` for other names.
+1. **Create the fields.** `kopi --import` and `kopi --update` (and so `--sync`) create them for you when they are missing, and `kopi --setup-dates` (with `--dry-run` to preview) does just that and nothing else. They are DATE fields named Started and Completed; use `[dates]` in `.kopi.toml` for other names.
 2. **Create the Roadmap view once**, in the web UI: add a view, set its layout to Roadmap, and choose Started and Completed as the date fields. GitHub's API cannot create or configure views, so this step is manual.
-3. **Fill the dates:** `kopi --backfill-dates` sets any that are missing on the existing items (`--dry-run` first). From then on `--import`, `--update`, `--start`, `--done` and `--move` keep them up to date by themselves. A board without the fields is simply left alone.
+3. **Fill the dates.** `--import` and `--update` fill every missing date on the board each time they run, so a normal `kopi --update` (or `--sync`) keeps them current, and `--start`, `--done` and `--move` stamp the item they change. `kopi --backfill-dates` (with `--dry-run`) does only the filling, on its own, and errors if the fields are missing.
 
 Where each date comes from:
 
@@ -411,7 +412,8 @@ Where each date comes from:
 - **Started defaults to the previous release.** With nothing better known, work is taken to have started when the previous changelog release shipped, so a release's Roadmap bar spans from the one before it. Releases on the same day give a one-day marker.
 - **Nothing is overwritten.** A date already on an item, including one you typed in, is kept; only empty fields are filled.
 - Open items get no Completed date, and In Progress items get Started only from `--start`.
-- Writes go in batches (20 per request). `--dry-run` on `--setup-dates` and `--backfill-dates` lists what would happen; `--import` and `--update` in dry-run mode do not mention dates.
+- Writes go in batches (20 per request). `--dry-run` on `--setup-dates` and `--backfill-dates` lists what would happen; `--import` and `--update` in dry-run mode neither create fields nor mention dates.
+- **Opting out.** `--no-dates` skips the dates for one `--import` / `--update`; `enabled = false` under `[dates]` in `.kopi.toml` turns them off for the repo, including the stamping by `--start`, `--done` and `--move`. `--setup-dates` and `--backfill-dates` still work when asked for explicitly.
 
 ## Reports
 

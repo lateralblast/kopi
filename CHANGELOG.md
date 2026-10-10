@@ -7,6 +7,92 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-10-10
+
+### Changed
+- `--diff` now reports duplicate board items explicitly as `duplicate` lines (and a `duplicates` list under `--json`) instead of leaving them to show up as `board-only`, and counts them in the summary. The duplicate detection is shared with `--squash`. Documented in `README.md`.
+
+## [0.3.7] - 2026-10-10
+
+### Changed
+- `test_version_consistent` now also checks that the newest `CHANGELOG.md` release heading matches the version in `kopi.py`, `pyproject.toml` and `README.md`.
+
+## [0.3.6] - 2026-10-10
+
+### Added
+- `--json` flag: every command and mode prints its result as a single JSON document on stdout, with human status messages suppressed and warnings left on stderr. Result shapes are documented in `README.md`.
+
+## [0.3.5] - 2026-10-10
+
+### Changed
+- `list` now prints a header row and shows each project's open/closed state and linked repo(s), and takes `--closed` to include closed projects. If the linked-repo lookup fails it warns and shows `-`. The output has a new column order (number, title, state, repo, URL). Documented in `README.md`.
+
+## [0.3.4] - 2026-10-10
+
+### Fixed
+- A failed repo link after a successful project create (`create --repo`, `--init`, `--import`) is now a warning on stderr and exits 0, instead of an error that hid the fact the project was created.
+
+## [0.3.3] - 2026-10-10
+
+### Added
+- `--init`, `--diff`, `--archive` and `--squash` take an optional `PATH` like `--import` and `--update`: they work on the repo in that directory, or the current one without it. Documented in `README.md`.
+
+## [0.3.2] - 2026-10-10
+
+### Added
+- `--import` and `--update` take an optional `PATH`: with it they work on the repo in that directory, without it on the current directory. Documented in `README.md`.
+
+## [0.3.1] - 2026-10-10
+
+### Changed
+- Verified `--archive` live: a temporary orphaned Todo draft was skipped as possibly reworded, then archived with `--force`, and no longer appears in the next run.
+
+## [0.3.0] - 2026-10-10
+
+### Fixed
+- `--update` and `--import` now wait (up to 30 seconds) for GitHub's item listing to show the items they just created, so an immediate second `--update` no longer re-adds them. A warning is printed if the listing is still behind.
+
+## [0.2.9] - 2026-10-10
+
+### Changed
+- Verified `--squash` live: it deleted the two duplicate Done items (`[0.2.3]`, `[0.2.4]`) from the `kopi` board, and a following `--diff` no longer lists them.
+
+## [0.2.8] - 2026-10-10
+
+### Added
+- `--squash` flag (with `--dry-run`): delete duplicate board items (same title or same issue/PR URL), keeping the one furthest along. Documented in `README.md`.
+
+## [0.2.7] - 2026-10-10
+
+### Added
+- `--archive` flag (with `--dry-run` and `--force`): archive open board drafts that no longer match any `CHANGELOG.md` or `TODO.md` entry. Never touches Done items or linked issues/PRs, and skips orphans that look like a reworded pending item unless forced. Documented in `README.md`.
+
+## [0.2.6] - 2026-10-10
+
+### Added
+- `--diff` flag: read-only report of every difference between the project's items and `CHANGELOG.md`, `TODO.md` and issues/PRs (`files-only`, `github-only`, `board-only`, `behind`, `ahead`). The matching logic behind `--update` now lives in a shared `sync_plan()` used by `--update`, `--diff` and `--archive`. Documented in `README.md`.
+
+## [0.2.5] - 2026-10-10
+
+### Changed
+- Verified issue/PR handling live with a real issue: `--update` adds it as a linked Todo item, `item-list` exposes its `url` (plus `repository` and `number`), and a later run matches it by URL instead of re-adding it.
+- Documented that GitHub's item listing lags after writes, so an immediate second `--update` can add items twice.
+
+## [0.2.4] - 2026-10-10
+
+### Added
+- `--update` now also imports the repo's issues and PRs: new ones are added as linked items, existing ones (matched by URL) move forward when their GitHub state does, and linked items are excluded from title matching. Documented in `README.md`.
+
+## [0.2.3] - 2026-10-10
+
+### Changed
+- Verified `--update` against the real `kopi` project: 5 items added and 1 moved to Done (board now 24 Done, 11 Todo, 1 In Progress); a second run reported nothing to do.
+
+## [0.2.2] - 2026-10-10
+
+### Changed
+- `--update` now moves board items that are still Todo or In Progress to Done when a completed `TODO.md` item or `CHANGELOG.md` entry matches them (60%+ shared words, one-to-one, best pairs first), rather than adding a duplicate. Documented in `README.md`.
+
 ## [0.2.1] - 2026-10-10
 
 ### Added

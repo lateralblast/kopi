@@ -9,11 +9,14 @@ https://creativecommons.org/licenses/by-nc-sa/4.0/ (see LICENSE.md)
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import time
+from types import SimpleNamespace
 
-__version__ = "0.2.1"
+__version__ = "0.3.8"
 
 
 class GhError(RuntimeError):
@@ -87,19 +90,73 @@ def _owner(args):
     return ["--owner", args.owner] if args.owner else []
 
 
+def linked_repos(projects):
+    """{project id: [owner/repo, ...]} via one batched GraphQL query; empty if the lookup fails."""
+    ids = [p["id"] for p in projects if re.fullmatch(r"[\w-]+", p.get("id") or "")]
+    if not ids:
+        return {}
+    query = "query { " + " ".join(
+        f'p{n}: node(id: "{i}") {{ ... on ProjectV2 {{ repositories(first: 5) {{ nodes {{ nameWithOwner }} }} }} }}'
+        for n, i in enumerate(ids)) + " }"
+    try:
+        data = graphql(query)["data"]
+    except (GhError, ValueError, KeyError) as e:
+        print(f"warning: could not look up linked repos: {e}", file=sys.stderr)
+        return {}
+    return {i: [r["nameWithOwner"] for r in ((data.get(f"p{n}") or {}).get("repositories") or {}).get("nodes", [])]
+            for n, i in enumerate(ids)}
+
+
+def emit(args, data):
+    """Under --json, print `data` as the command's single JSON result."""
+    if args.json:
+        print(json.dumps(data, indent=2))
+
+
+def say(args, msg):
+    """Human-readable output; suppressed under --json so stdout holds only the JSON result."""
+    if not args.json:
+        print(msg)
+
+
+def _item(status, title, url=None):
+    return {"status": status, "title": title, **({"url": url} if url else {})}
+
+
 def cmd_list(args):
-    data = run_json("project", "list", *_owner(args), "--limit", str(args.limit))
-    for p in data["projects"]:
-        print(f"{p['number']}\t{p['title']}\t{p['url']}")
+    cmd = ["project", "list", *_owner(args), "--limit", str(args.limit)]
+    if args.closed:
+        cmd.append("--closed")
+    projects = run_json(*cmd)["projects"]
+    repos = linked_repos(projects)
+    rows = [{"number": p["number"], "title": p["title"], "state": "closed" if p.get("closed") else "open",
+             "repos": repos.get(p.get("id"), []), "url": p["url"]} for p in projects]
+    if args.json:
+        emit(args, rows)
+        return
+    print("NUMBER\tTITLE\tSTATE\tREPO\tURL")
+    for r in rows:
+        print(f"{r['number']}\t{r['title']}\t{r['state']}\t{','.join(r['repos']) or '-'}\t{r['url']}")
+
+
+def _create(args):
+    """Create the project and link --repo if given. Returns (project, linked repo or None)."""
+    p = run_json("project", "create", "--title", args.title, *_owner(args))
+    say(args, f"Created #{p['number']}: {p['url']}")
+    linked = None
+    if args.repo:
+        try:
+            run("project", "link", str(p["number"]), *_owner(args), "--repo", args.repo)
+            say(args, f"Linked to {args.repo}")
+            linked = args.repo
+        except GhError as e:
+            print(f"warning: project #{p['number']} was created but linking to {args.repo} failed: {e}", file=sys.stderr)
+    return p, linked
 
 
 def cmd_create(args):
-    p = run_json("project", "create", "--title", args.title, *_owner(args))
-    print(f"Created #{p['number']}: {p['url']}")
-    if args.repo:
-        run("project", "link", str(p["number"]), *_owner(args), "--repo", args.repo)
-        print(f"Linked to {args.repo}")
-    return p
+    p, linked = _create(args)
+    emit(args, {"number": p["number"], "url": p["url"], "linked_repo": linked})
 
 
 def find_project(args):
@@ -118,18 +175,19 @@ def ensure_project(args):
     """
     p, (repo_owner, name) = find_project(args)
     if p:
-        print(f"Project exists: #{p['number']} {p['title']} {p['url']}")
+        say(args, f"Project exists: #{p['number']} {p['title']} {p['url']}")
         return p["number"], False
     args.title = name
     # gh only links a project to repos under the same owner
     args.repo = f"{repo_owner}/{name}" if args.owner == repo_owner else None
     if not args.repo:
         print(f"Not linking: project owner {args.owner} differs from repo owner {repo_owner}", file=sys.stderr)
-    return cmd_create(args)["number"], True
+    return _create(args)[0]["number"], True
 
 
 def cmd_init(args):
-    ensure_project(args)
+    number, created = ensure_project(args)
+    emit(args, {"number": number, "created": created})
 
 
 STOPWORDS = {"a", "an", "and", "the", "of", "to", "in", "on", "for", "with", "from", "by", "is", "as", "at", "or"}
@@ -246,6 +304,33 @@ def _status_setter(args, number, needed):
     return set_status
 
 
+SETTLE_TIMEOUT, SETTLE_INTERVAL = 30, 2
+
+
+def wait_for_items(args, number, ids):
+    """Poll item-list until every new item id is listed, so an immediate re-run sees them.
+
+    GitHub's listing lags after writes; without this a second --update can re-add the same items.
+    Gives up after SETTLE_TIMEOUT seconds with a warning.
+    """
+    pending = set(ids)
+    if not pending:
+        return
+    waited = 0
+    while True:
+        listed = {i["id"] for i in run_json("project", "item-list", str(number), *_owner(args),
+                                            "--limit", "500")["items"]}
+        pending -= listed
+        if not pending:
+            return
+        if waited >= SETTLE_TIMEOUT:
+            print(f"warning: {len(pending)} new items not yet listed by GitHub; wait before running --update again",
+                  file=sys.stderr)
+            return
+        time.sleep(SETTLE_INTERVAL)
+        waited += SETTLE_INTERVAL
+
+
 def cmd_import(args):
     """Seed an empty project from CHANGELOG.md and TODO.md (draft items) plus the repo's issues and PRs."""
     changelog, todo = _read("CHANGELOG.md"), _read("TODO.md")
@@ -255,6 +340,10 @@ def cmd_import(args):
     plan, skipped = build_plan(changelog, todo, linked)
     total = len(plan) + len(linked)
     if args.dry_run:
+        items = [_item(st, t) for st, t, _ in plan] + [_item(st, _title(t), u) for st, t, u in linked]
+        if args.json:
+            emit(args, {"dry_run": True, "items": items, "skipped": [_title(t) for t in skipped]})
+            return
         for status, title, _ in plan:
             print(f"{status}\t{title}")
         for status, title, url in linked:
@@ -265,31 +354,50 @@ def cmd_import(args):
         return
     number, _ = ensure_project(args)
     if run_json("project", "item-list", str(number), *_owner(args), "--limit", "1")["items"] and not args.force:
-        print(f"Project #{number} already has items; nothing imported (use --force to import anyway)")
+        say(args, f"Project #{number} already has items; nothing imported (use --force to import anyway)")
+        emit(args, {"project": number, "dry_run": False, "imported": 0, "reason": "project already has items"})
         return
     set_status = _status_setter(args, number, [st for st, *_ in plan + linked])
 
+    created = []
     for status, title, body in plan:
-        set_status(run_json("project", "item-create", str(number), *_owner(args),
-                            "--title", title, "--body", body)["id"], status)
+        created.append(run_json("project", "item-create", str(number), *_owner(args),
+                                "--title", title, "--body", body)["id"])
+        set_status(created[-1], status)
     for status, _, url in linked:
-        set_status(run_json("project", "item-add", str(number), *_owner(args), "--url", url)["id"], status)
-    print(f"Imported {total} items into project #{number}")
+        created.append(run_json("project", "item-add", str(number), *_owner(args), "--url", url)["id"])
+        set_status(created[-1], status)
+    wait_for_items(args, number, created)
+    say(args, f"Imported {total} items into project #{number}")
+    emit(args, {"project": number, "dry_run": False, "imported": total})
 
 
 RANK = {"Todo": 0, "In Progress": 1, "Done": 2}
 CHANGELOG_TITLE = re.compile(r"^\[(\d+\.\d+\.\d+|Unreleased)\] ")
 
 
-def cmd_update(args):
-    """Sync CHANGELOG.md and TODO.md into the existing project.
+def _item_url(item):
+    """URL of a linked issue/PR item, or None for draft items."""
+    content = item.get("content") or {}
+    if content.get("url"):
+        return content["url"]
+    if content.get("number") and content.get("repository"):
+        kind = "pull" if content.get("type") == "PullRequest" else "issues"
+        return f"https://github.com/{content['repository']}/{kind}/{content['number']}"
+    return None
 
-    Adds items the project lacks and moves items forward (Todo -> In Progress -> Done)
-    when the files are ahead of the board. Never moves an item backwards.
+
+def sync_plan(args):
+    """Compare CHANGELOG.md, TODO.md and the repo's issues/PRs with the project's items.
+
+    Returns a namespace with: number; adds [(status, title, body)]; link_adds [(status, title, url)];
+    moves [(item, from, to, title)] where the board is behind; ahead [(item, board, file, title)] where
+    the board is ahead (never acted on); orphans, the board's draft items that match no file entry.
     """
     changelog, todo = _read("CHANGELOG.md"), _read("TODO.md")
-    if not changelog and not todo:
-        raise GhError("nothing to update from: no CHANGELOG.md or TODO.md in the current directory")
+    linked = fetch_linked(git_repo())
+    if not changelog and not todo and not linked:
+        raise GhError("nothing to compare: no CHANGELOG.md or TODO.md in the current directory, and no issues or PRs")
     plan, skipped = build_plan(changelog, todo)
     project, _ = find_project(args)
     if not project:
@@ -303,7 +411,10 @@ def cmd_update(args):
 
     # An exact title match wins; otherwise a TODO item may fuzzy-match an unclaimed item at 0.75+
     # overlap. Each board item matches at most one entry, so near-identical items are not conflated.
-    matched, claimed = {}, set()
+    # Linked issue/PR items are matched by URL only; they never take part in title matching.
+    by_url = {u: i for i in existing if (u := _item_url(i))}
+    linked_ids = {i["id"] for i in by_url.values()}
+    matched, claimed = {}, set(linked_ids)
     for idx, (_, title, _, _, _) in enumerate(entries):
         item = next((i for i in existing if i["id"] not in claimed and i["title"] == title), None)
         if item:
@@ -318,32 +429,201 @@ def cmd_update(args):
             matched[idx] = item
             claimed.add(item["id"])
 
-    adds, moves = [], []
-    for idx, (status, title, body, _, can_add) in enumerate(entries):
+    # Completion sweep: a completed entry (changelog or [x] TODO) that matches no board item exactly may be
+    # a reworded version of an item still open on the board. Match those at 0.6+ overlap, best pairs first,
+    # and move the board item to Done instead of adding a duplicate.
+    open_items = [i for i in existing if i["id"] not in claimed and RANK.get(i.get("status"), -1) < RANK["Done"]]
+    pairs = sorted(((overlap(CHANGELOG_TITLE.sub("", body or title), i["title"]), idx, i)
+                    for idx, (status, title, body, _, _) in enumerate(entries)
+                    if idx not in matched and status == "Done" for i in open_items),
+                   key=lambda p: p[0], reverse=True)
+    for score, idx, item in pairs:
+        if score >= 0.6 and idx not in matched and item["id"] not in claimed:
+            matched[idx] = item
+            claimed.add(item["id"])
+
+    adds, moves, ahead, link_adds = [], [], [], []
+
+    def compare(item, status):
+        board = RANK.get(item.get("status"), -1)
+        if RANK[status] > board:
+            moves.append((item, item.get("status") or "none", status, item["title"]))
+        elif RANK[status] < board:
+            ahead.append((item, item.get("status"), status, item["title"]))
+
+    for idx, (status, title, body, is_changelog, can_add) in enumerate(entries):
         item = matched.get(idx)
         if item:
-            if RANK[status] > RANK.get(item.get("status"), -1):
-                moves.append((item, item.get("status") or "none", status, title))
-        elif can_add:
-            adds.append((status, title, body))
+            compare(item, status)
+        elif can_add and (is_changelog or not any(similar(body or title, t) for _, t, _ in linked)):
+            adds.append((status, title, body))  # a TODO item duplicating an issue/PR title is left to the issue/PR
+    for status, title, url in linked:
+        item = by_url.get(url)
+        if item:
+            compare(item, status)
+        else:
+            link_adds.append((status, title, url))
 
+    matched_ids = {i["id"] for i in matched.values()}
+    orphans = [i for i in existing if i["id"] not in matched_ids and i["id"] not in linked_ids]
+    return SimpleNamespace(number=number, adds=adds, link_adds=link_adds, moves=moves, ahead=ahead, orphans=orphans, items=existing)
+
+
+def cmd_update(args):
+    """Sync CHANGELOG.md, TODO.md and the repo's issues/PRs into the existing project.
+
+    Adds items the project lacks and moves items forward (Todo -> In Progress -> Done)
+    when the files or GitHub are ahead of the board. Never moves an item backwards.
+    """
+    p = sync_plan(args)
+    adds, link_adds, moves, number = p.adds, p.link_adds, p.moves, p.number
+    report = {"project": number, "dry_run": bool(args.dry_run),
+              "added": [_item(st, t) for st, t, _ in adds] + [_item(st, _title(t), u) for st, t, u in link_adds],
+              "moved": [{"title": t, "from": old, "to": new} for _, old, new, t in moves]}
     if args.dry_run:
+        if args.json:
+            emit(args, report)
+            return
         for status, title, _ in adds:
             print(f"add\t{status}\t{title}")
+        for status, title, url in link_adds:
+            print(f"add\t{status}\t{_title(title)}\t{url}")
         for _, old, new, title in moves:
             print(f"move\t{old} -> {new}\t{title}")
-        print(f"Dry run: {len(adds)} to add, {len(moves)} to move in project #{number}")
+        print(f"Dry run: {len(adds) + len(link_adds)} to add, {len(moves)} to move in project #{number}")
         return
-    if not adds and not moves:
-        print(f"Project #{number} is up to date")
+    if not adds and not link_adds and not moves:
+        say(args, f"Project #{number} is up to date")
+        emit(args, report)
         return
-    set_status = _status_setter(args, number, [st for st, *_ in adds] + [new for _, _, new, _ in moves])
+    set_status = _status_setter(args, number,
+                                [st for st, *_ in adds + link_adds] + [new for _, _, new, _ in moves])
+    created = []
     for status, title, body in adds:
-        set_status(run_json("project", "item-create", str(number), *_owner(args),
-                            "--title", title, "--body", body)["id"], status)
+        created.append(run_json("project", "item-create", str(number), *_owner(args),
+                                "--title", title, "--body", body)["id"])
+        set_status(created[-1], status)
+    for status, _, url in link_adds:
+        created.append(run_json("project", "item-add", str(number), *_owner(args), "--url", url)["id"])
+        set_status(created[-1], status)
     for item, _, new, _ in moves:
         set_status(item["id"], new)
-    print(f"Updated project #{number}: {len(adds)} added, {len(moves)} moved")
+    wait_for_items(args, number, created)
+    say(args, f"Updated project #{number}: {len(adds) + len(link_adds)} added, {len(moves)} moved")
+    emit(args, report)
+
+
+def cmd_diff(args):
+    """Show every difference between the project's items and CHANGELOG.md / TODO.md / issues / PRs. Read-only."""
+    p = sync_plan(args)
+    dupes = find_duplicates(p.items)
+    extra_ids = {extra["id"] for _, extra in dupes}
+    orphans = [i for i in p.orphans if i["id"] not in extra_ids]  # a duplicate is reported once, as a duplicate
+    if args.json:
+        emit(args, {"project": p.number,
+                    "files_only": [_item(st, t) for st, t, _ in p.adds],
+                    "github_only": [_item(st, _title(t), u) for st, t, u in p.link_adds],
+                    "board_only": [_item(i.get("status") or "none", i["title"]) for i in orphans],
+                    "duplicates": [_item(extra.get("status") or "none", extra["title"]) for _, extra in dupes],
+                    "behind": [{"title": t, "from": old, "to": new} for _, old, new, t in p.moves],
+                    "ahead": [{"title": t, "board": b or "none", "file": f} for _, b, f, t in p.ahead]})
+        return
+    for status, title, _ in p.adds:
+        print(f"files-only\t{status}\t{title}")
+    for status, title, url in p.link_adds:
+        print(f"github-only\t{status}\t{_title(title)}\t{url}")
+    for item in orphans:
+        print(f"board-only\t{item.get('status') or 'none'}\t{item['title']}")
+    for keep, extra in dupes:
+        print(f"duplicate\t{extra.get('status') or 'none'}\t{extra['title']}\t(kept copy: {keep.get('status') or 'none'})")
+    for _, old, new, title in p.moves:
+        print(f"behind\t{old} -> {new}\t{title}")
+    for _, board, filed, title in p.ahead:
+        print(f"ahead\t{board or 'none'} (file: {filed})\t{title}")
+    counts = (len(p.adds), len(p.link_adds), len(orphans), len(p.moves), len(p.ahead), len(dupes))
+    if not any(counts):
+        print(f"No differences in project #{p.number}")
+        return
+    print(f"Project #{p.number}: {counts[0]} only in files, {counts[1]} only on GitHub, {counts[2]} only on board, "
+          f"{counts[3]} behind, {counts[4]} ahead, {counts[5]} duplicates (see --squash)")
+
+
+def cmd_archive(args):
+    """Archive open board drafts that no longer match any CHANGELOG.md / TODO.md entry.
+
+    Done items and linked issues/PRs are never archived. An orphan that resembles a pending new item
+    (50%+ shared words) is probably a reworded one, so it is skipped unless --force is given.
+    """
+    p = sync_plan(args)
+    pending = [body or title for _, title, body in p.adds] + [title for _, title, _ in p.link_adds]
+    to_archive, reworded = [], []
+    for item in p.orphans:
+        if RANK.get(item.get("status"), -1) >= RANK["Done"]:
+            continue
+        looks_reworded = any(overlap(text, item["title"]) >= 0.5 for text in pending)
+        (reworded if looks_reworded and not args.force else to_archive).append(item)
+    report = {"project": p.number, "dry_run": bool(args.dry_run),
+              "archived": [_item(i.get("status") or "none", i["title"]) for i in to_archive],
+              "skipped": [_item(i.get("status") or "none", i["title"]) for i in reworded]}
+    if args.json and args.dry_run:
+        emit(args, report)
+        return
+    if args.dry_run:
+        for item in to_archive:
+            print(f"archive\t{item.get('status') or 'none'}\t{item['title']}")
+        for item in reworded:
+            print(f"skip (looks reworded; use --force)\t{item.get('status') or 'none'}\t{item['title']}")
+        print(f"Dry run: {len(to_archive)} to archive, {len(reworded)} skipped in project #{p.number}")
+        return
+    for item in to_archive:
+        run("project", "item-archive", str(p.number), *_owner(args), "--id", item["id"])
+    msg = f"Archived {len(to_archive)} items in project #{p.number}"
+    say(args, msg + (f" ({len(reworded)} skipped as possibly reworded; use --force)" if reworded else ""))
+    emit(args, report)
+
+
+def find_duplicates(items):
+    """[(kept, extra)] for each board item that has another copy: same URL (linked) or same title (drafts).
+
+    The kept copy is the one furthest along (Done over In Progress over Todo), the first listed on a tie.
+    """
+    groups = {}
+    for item in items:
+        key = _item_url(item) or " ".join(item["title"].lower().split())
+        groups.setdefault(key, []).append(item)
+    dupes = []
+    for group in groups.values():
+        keep = max(group, key=lambda i: RANK.get(i.get("status"), -1))  # max() keeps the first of equals
+        dupes += [(keep, i) for i in group if i is not keep]
+    return dupes
+
+
+def cmd_squash(args):
+    """Delete duplicate board items: same URL (linked) or same title (drafts).
+
+    Keeps the copy furthest along (Done over In Progress over Todo), the earliest listed on a tie. Works
+    on the board only; the files and GitHub issues/PRs are not consulted.
+    """
+    project, _ = find_project(args)
+    if not project:
+        raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
+    number = project["number"]
+    items = run_json("project", "item-list", str(number), *_owner(args), "--limit", "500")["items"]
+    doomed = [extra for _, extra in find_duplicates(items)]
+    report = {"project": number, "dry_run": bool(args.dry_run),
+              "deleted": [_item(i.get("status") or "none", i["title"]) for i in doomed]}
+    if args.json and args.dry_run:
+        emit(args, report)
+        return
+    if args.dry_run:
+        for item in doomed:
+            print(f"delete\t{item.get('status') or 'none'}\t{item['title']}")
+        print(f"Dry run: {len(doomed)} duplicates to delete in project #{number}")
+        return
+    for item in doomed:
+        run("project", "item-delete", str(number), *_owner(args), "--id", item["id"])
+    say(args, f"Deleted {len(doomed)} duplicate items in project #{number}")
+    emit(args, report)
 
 
 def cmd_view(args):
@@ -352,17 +632,24 @@ def cmd_view(args):
 
 def cmd_delete(args):
     run("project", "delete", str(args.number), *_owner(args))
-    print(f"Deleted #{args.number}")
+    say(args, f"Deleted #{args.number}")
+    emit(args, {"deleted": args.number})
 
 
 def cmd_fields(args):
     data = run_json("project", "field-list", str(args.number), *_owner(args))
+    if args.json:
+        emit(args, data["fields"])
+        return
     for f in data["fields"]:
         print(f"{f['name']}\t{f['type']}")
 
 
 def cmd_items(args):
     data = run_json("project", "item-list", str(args.number), *_owner(args), "--limit", str(args.limit))
+    if args.json:
+        emit(args, data["items"])
+        return
     for i in data["items"]:
         print(f"{i['id']}\t{i.get('status', '')}\t{i['title']}")
 
@@ -373,25 +660,42 @@ def cmd_add(args):
         run("project", "item-add", str(args.number), *_owner(args), "--url", args.url)
     else:
         run("project", "item-create", str(args.number), *_owner(args), "--title", args.title)
-    print("Added")
+    say(args, "Added")
+    emit(args, {"added": args.url or args.title})
 
 
 def build_parser():
     p = argparse.ArgumentParser(prog="kopi", description="Manage GitHub Projects (v2)")
     p.add_argument("--version", action="version", version=f"kopi {__version__}")
     p.add_argument("--owner", help="user or org (default: owner of the current git repo's origin, else @me)")
-    p.add_argument("--init", action="store_true",
-                   help="create a project named after the current repo (linked to it) if none exists")
-    p.add_argument("--import", dest="do_import", action="store_true",
-                   help="seed an empty project from CHANGELOG.md, TODO.md and the repo's issues/PRs (creates the project if missing)")
-    p.add_argument("--update", action="store_true",
-                   help="sync CHANGELOG.md and TODO.md into the existing project: add missing items, move items forward")
-    p.add_argument("--dry-run", action="store_true", help="with --import/--update: print what would change")
-    p.add_argument("--force", action="store_true", help="with --import: import even if the project has items")
+    p.add_argument("--init", nargs="?", const=".", metavar="PATH",
+                   help="create a project named after the repo (linked to it) if none exists; "
+                        "uses the repo in PATH, default the current directory")
+    p.add_argument("--import", dest="do_import", nargs="?", const=".", metavar="PATH",
+                   help="seed an empty project from CHANGELOG.md, TODO.md and the repo's issues/PRs (creates the project if missing); "
+                        "uses the repo in PATH, default the current directory")
+    p.add_argument("--update", nargs="?", const=".", metavar="PATH",
+                   help="sync CHANGELOG.md, TODO.md and the repo's issues/PRs into the existing project: add missing items, move items forward; "
+                        "uses the repo in PATH, default the current directory")
+    p.add_argument("--diff", nargs="?", const=".", metavar="PATH",
+                   help="show differences between the project's items and CHANGELOG.md, TODO.md and issues/PRs; "
+                        "uses the repo in PATH, default the current directory")
+    p.add_argument("--archive", nargs="?", const=".", metavar="PATH",
+                   help="archive open board drafts that no longer match any CHANGELOG.md/TODO.md entry; "
+                        "uses the repo in PATH, default the current directory")
+    p.add_argument("--squash", nargs="?", const=".", metavar="PATH",
+                   help="delete duplicate board items (same title or URL), keeping the one furthest along; "
+                        "uses the repo in PATH, default the current directory")
+    p.add_argument("--json", action="store_true",
+                   help="print the result as JSON on stdout (status messages are suppressed; warnings stay on stderr)")
+    p.add_argument("--dry-run", action="store_true", help="with --import/--update/--archive/--squash: print what would change")
+    p.add_argument("--force", action="store_true",
+                   help="with --import: import even if the project has items; with --archive: also archive items that look reworded")
     sub = p.add_subparsers(dest="cmd")
 
     s = sub.add_parser("list", help="list projects")
     s.add_argument("--limit", type=int, default=30)
+    s.add_argument("--closed", action="store_true", help="include closed projects")
     s.set_defaults(fn=cmd_list)
 
     s = sub.add_parser("create", help="create a project")
@@ -423,11 +727,17 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not (args.init or args.do_import or args.update or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update)")
-    if args.init + args.do_import + args.update > 1:
-        parser.error("--init, --import and --update are mutually exclusive")
+    modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.squash]
+    if not (any(modes) or args.cmd):
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --squash)")
+    if sum(map(bool, modes)) > 1:
+        parser.error("--init, --import, --update, --diff, --archive and --squash are mutually exclusive")
     try:
+        path = next((m for m in modes if m), None)
+        if path:
+            if not os.path.isdir(path):
+                raise GhError(f"not a directory: {path}")
+            os.chdir(path)
         check_auth()
         if not args.owner:
             args.owner = git_owner()
@@ -435,7 +745,11 @@ def main(argv=None):
                 print(f"Using owner: {args.owner} (from git origin)", file=sys.stderr)
             else:
                 args.owner = "@me"
-        (cmd_import if args.do_import else cmd_update if args.update else cmd_init if args.init else args.fn)(args)
+        handler = next((fn for on, fn in ((args.do_import, cmd_import), (args.update, cmd_update),
+                                          (args.diff, cmd_diff), (args.archive, cmd_archive),
+                                          (args.squash, cmd_squash),
+                                          (args.init, cmd_init)) if on), getattr(args, "fn", None))
+        handler(args)
     except GhError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

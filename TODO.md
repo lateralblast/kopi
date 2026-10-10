@@ -4,21 +4,31 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Open
 
-- [ ] Run `--update` for real against the `kopi` project (only `--dry-run` and mocks so far).
-- [ ] Make `--update` handle issues/PRs, and optionally archive board items whose TODO entry was deleted.
-- [ ] Verify issue/PR import live once the repo has an issue or PR (only mocks and an empty-result dry run so far).
-- [ ] Consider opt-in import of TODO/FIXME code comments and GitHub releases/tags.
+- [ ] Consider opt-in import of TODO/FIXME code comments and GitHub releases/tags (notes in [RESEARCH.md](RESEARCH.md)).
 - [ ] Verify the `--init` create-and-link path against real GitHub (only the existing-project path was run live).
 - [~] Run `kopi` against real GitHub: `list`, `view`, `create`, `--repo` link and `delete` verified; still to try `fields`, `items`, `add`.
-- [ ] Treat a failed repo link after a successful `create` as a warning (currently exits 1 although the project was created).
-- [ ] Make `list` output more useful: header row, open/closed state, linked repo.
 - [ ] Set item field values (status, etc.) via the `graphql()` helper.
-- [ ] Add a `--json` output flag.
-- [ ] Cut the first release: tag the version in git (changelog and files are at `0.2.1`).
-- [ ] Add `CHANGELOG.md` heading to the version-consistency test (it checks `kopi.py`, `pyproject.toml` and `README.md` only).
+- [ ] Cut the first release: tag the version in git (changelog and files are at `0.3.8`).
 
 ## Done
 
+- [x] `--diff` flags duplicate board items explicitly, with a test.
+- [x] Added the `CHANGELOG.md` heading to the version-consistency test.
+- [x] `--json` output flag for every command and mode, with tests.
+- [x] Make `list` output more useful: header row, open/closed state, linked repo; verified live.
+- [x] Treat a failed repo link after a successful `create` as a warning, with a test.
+- [x] Optional repo path for `--init`, `--diff`, `--archive` and `--squash`, with tests.
+- [x] `--import` / `--update` accept an optional repo path, with tests.
+- [x] Ran `--archive` for real on the `kopi` board using a temporary orphaned draft; archived and gone from the next run.
+- [x] Guard against GitHub's delayed `item-list`: `--update`/`--import` poll until new items are listed, with tests (mock-based; not re-run live).
+- [x] Ran `--squash` for real on the `kopi` board; the duplicate `[0.2.3]` and `[0.2.4]` items are gone.
+- [x] `--squash` flag: delete duplicate board items, with tests.
+- [x] Archive board items whose TODO entry was deleted (optional `--update` behaviour).
+- [x] `--diff` flag: show differences between the board and CHANGELOG.md / TODO.md / issues / PRs, with tests; run live.
+- [x] Verify issue/PR import and `--update` live once the repo has an issue or PR (only mocks and an empty-result dry run so far); confirm `item-list` exposes a URL (or repository and number) for linked items.
+- [x] Make `--update` handle issues/PRs.
+- [x] Run `--update` for real against the `kopi` project (only `--dry-run` and mocks so far).
+- [x] `--update` completion sweep: move still-open board items to Done when a completed TODO/CHANGELOG entry matches them, with tests.
 - [x] `--update` flag: add missing changelog/TODO items to the project and move items forward, with tests.
 - [x] Ran `--import` for real against the `kopi` project; 31 items created with correct statuses.
 - [x] `--import` also imports issues and PRs as linked items, with tests (mock-based; this repo has none yet).

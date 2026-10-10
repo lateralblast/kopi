@@ -148,3 +148,53 @@ def test_release_warns_about_uncommitted_changes_and_checks_its_flags(capsys):
         cli.main(["--tag", "1.0.0", "--update"])                            # --tag belongs to --release
     rc, calls = _release(("--release", "--tag", "has space"))
     assert rc == 1 and not _created(calls) and "not a usable tag name" in capsys.readouterr().err
+
+
+GH_RELEASES = json.dumps([
+    {"tagName": "0.9.0", "name": "Nine", "isDraft": False, "isPrerelease": False, "isLatest": True, "publishedAt": "2026-05-01T10:00:00Z", "createdAt": "2026-05-01T09:00:00Z"},
+    {"tagName": "1.0.0-rc1", "name": "", "isDraft": False, "isPrerelease": True, "isLatest": False, "publishedAt": "2026-06-01T10:00:00Z", "createdAt": "2026-06-01T09:00:00Z"},
+    {"tagName": "1.0.0", "name": "One", "isDraft": True, "isPrerelease": False, "isLatest": False, "publishedAt": None, "createdAt": "2026-07-04T09:00:00Z"}])
+
+
+def _list_releases(argv, repo=("lateralblast", "kopi")):
+    calls = []
+
+    def fake_run(*a):
+        calls.append(a)
+        return GH_RELEASES
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="lateralblast"), \
+         mock.patch("kopi.git_repo", return_value=repo), mock.patch("kopi.run", side_effect=fake_run), \
+         mock.patch("kopi._read", side_effect=lambda p: RELEASE_CHANGELOG if p == "CHANGELOG.md" else ""):
+        rc = cli.main(list(argv))
+    return rc, calls
+
+
+def test_list_releases_shows_github_releases_with_their_flags(capsys):
+    rc, calls = _list_releases(("--list", "releases"))
+    assert rc == 0 and calls[0][:4] == ("release", "list", "--repo", "lateralblast/kopi")
+    assert capsys.readouterr().out.splitlines() == [
+        "0.9.0\t2026-05-01\tlatest\tNine",
+        "1.0.0-rc1\t2026-06-01\tpre-release\t1.0.0-rc1",                        # no name: the tag stands in
+        "1.0.0\t2026-07-04\tdraft\tOne"]                                         # a draft has no publish date: its created date
+    rc, calls = _list_releases(("--list", "release"))                            # the singular works too
+    assert rc == 0 and capsys.readouterr().out.count("\n") == 3
+
+
+def test_list_releases_json_and_errors(capsys):
+    rc, _ = _list_releases(("--json", "--list", "releases"))
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0] == {"tag": "0.9.0", "name": "Nine", "date": "2026-05-01", "latest": True, "draft": False, "prerelease": False,
+                       "url": "https://github.com/lateralblast/kopi/releases/tag/0.9.0"}
+    assert [r["tag"] for r in rows if r["draft"] or r["prerelease"]] == ["1.0.0-rc1", "1.0.0"]
+    rc, calls = _list_releases(("--list", "releases"), repo=None)
+    assert rc == 1 and not calls and "must be run inside a git repo" in capsys.readouterr().err
+
+
+def test_list_releases_local_reads_the_changelog_without_github(capsys):
+    with mock.patch("kopi._read", side_effect=lambda p: RELEASE_CHANGELOG), mock.patch("kopi.run") as run, \
+         mock.patch("kopi.check_auth") as auth:
+        assert cli.main(["--list", "releases", "--local"]) == 0
+        assert capsys.readouterr().out.splitlines() == ["0.9.0\t2026-05-01\t2", "0.10.0\t2026-04-01\t1", "0.8.0\t2026-03-01\t0"]
+        assert cli.main(["--json", "--list", "releases", "--local"]) == 0
+    assert json.loads(capsys.readouterr().out)[0] == {"version": "0.9.0", "date": "2026-05-01", "entries": 2}
+    assert not run.called and not auth.called                                    # --local needs no GitHub and no login

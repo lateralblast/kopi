@@ -13,6 +13,7 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] `--list releases` (GitHub releases, or CHANGELOG.md versions with `--local`), with tests.
 - [x] Ran `kopi --sync` on the `kopi` board: 61 items added, 1 moved to Done, 108 dates set in 57 seconds (125 items, no duplicates), and `ISSUES.md` created.
 - [x] `--tag TAG` for `--release`, defaulting to the plain changelog version number, with tests.
 - [x] `--release [TAG]` creates a GitHub release at the last commit with the changelog section as notes, with tests; dry run checked live.

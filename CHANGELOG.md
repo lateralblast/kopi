@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-10-11
+
+### Added
+- `--list releases` (also `--list release`): list the repo's GitHub releases, newest first, one per line as tag, date, flags (`latest`, `draft`, `pre-release`) and name. `--json` prints `{tag, name, date, latest, draft, prerelease, url}` for each. With `--local` it lists the dated versions in `CHANGELOG.md` instead (version, date, number of entries), with no GitHub access or login, so comparing the two shows which versions have not been released yet. Documented in `README.md`.
+
 ## [0.8.3] - 2026-10-11
 
 ### Changed

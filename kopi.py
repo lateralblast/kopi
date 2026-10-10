@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.8.3"
+__version__ = "0.8.4"
 
 
 class GhError(RuntimeError):
@@ -1248,6 +1248,41 @@ LIST_KINDS = {"todo": "Todo", "inprogress": "In Progress", "in-progress": "In Pr
 LINKED_LISTS = {"issues": "issues", "prs": "prs"}  # --list issues|prs: the same kinds --export writes to ISSUES.md / PRS.md
 
 
+RELEASE_LISTS = ("release", "releases")  # --list releases: GitHub's releases (or, with --local, CHANGELOG.md's versions)
+
+
+def _list_releases(args):
+    """--list releases: the repo's GitHub releases, newest first, one per line: tag, date, flags (latest, draft,
+    pre-release) and name. With --local, the dated versions in CHANGELOG.md instead (version, date, entries): no
+    GitHub, so comparing the two shows which versions have not been released."""
+    if args.local:
+        text = _read("CHANGELOG.md")
+        rows = [{"version": v, "date": d, "entries": len([l for l in changelog_section(text, v).splitlines() if l.startswith("- ")])}
+                for v, d in changelog_release_dates(text).items()]
+        if args.json:
+            emit(args, rows)
+            return
+        for r in rows:
+            print(f"{r['version']}\t{r['date']}\t{r['entries']}")
+        return
+    repo = git_repo()
+    if not repo:
+        raise GhError("--list releases must be run inside a git repo with a github.com origin remote")
+    slug = "/".join(repo)
+    found = json.loads(run("release", "list", "--repo", slug, "--limit", str(LINKED_LIMIT), "--json",
+                           "tagName,name,isDraft,isPrerelease,isLatest,publishedAt,createdAt") or "[]")
+    _warn_if_full(f"the release list for {slug}", len(found), LINKED_LIMIT)
+    rows = [{"tag": r["tagName"], "name": r.get("name") or r["tagName"], "date": (r.get("publishedAt") or r.get("createdAt") or "")[:10],
+             "latest": bool(r.get("isLatest")), "draft": bool(r.get("isDraft")), "prerelease": bool(r.get("isPrerelease")),
+             "url": f"https://github.com/{slug}/releases/tag/{r['tagName']}"} for r in found]
+    if args.json:
+        emit(args, rows)
+        return
+    for r in rows:
+        flags = ",".join(f for f, on in (("latest", r["latest"]), ("draft", r["draft"]), ("pre-release", r["prerelease"])) if on)
+        print(f"{r['tag']}\t{r['date']}\t{flags or '-'}\t{r['name']}")
+
+
 def _list_linked(args):
     """--list issues|prs: the project's issue (or pull request) items, any status; with --local, the entries in
     ISSUES.md (or PRS.md) instead."""
@@ -1281,6 +1316,8 @@ def cmd_list_kind(args):
     """
     if args.list in LINKED_LISTS:
         return _list_linked(args)
+    if args.list in RELEASE_LISTS:
+        return _list_releases(args)
     status = LIST_KINDS[args.list]
     if args.local:
         rows = [{"status": st, "title": text} for st, text in parse_todo(_read("TODO.md")) if st == status]
@@ -2850,9 +2887,10 @@ def build_parser():
                    help="with --import/--update/--diff/--archive/--sync: also track git tags as Done items")
     p.add_argument("--json", action="store_true",
                    help="print the result as JSON on stdout (status messages are suppressed; warnings stay on stderr)")
-    p.add_argument("--list", choices=sorted({*LIST_KINDS, *LINKED_LISTS}), metavar="KIND",
-                   help="list the project's items of one kind (todo, inprogress, done, issues, prs); with --local, list the matching "
-                        "entries in TODO.md (ISSUES.md / PRS.md for issues / prs) instead")
+    p.add_argument("--list", choices=sorted({*LIST_KINDS, *LINKED_LISTS, *RELEASE_LISTS}), metavar="KIND",
+                   help="list the project's items of one kind (todo, inprogress, done, issues, prs), or the repo's GitHub releases "
+                        "(releases); with --local, list the matching entries in TODO.md (ISSUES.md / PRS.md for issues / prs, "
+                        "the versions in CHANGELOG.md for releases) instead")
     p.add_argument("--export", choices=sorted({*EXPORT_KINDS, *LINKED_EXPORTS}), metavar="KIND",
                    help="write the project's items of one kind into local files: todo, inprogress or done into TODO.md "
                         "as [ ] / [~] / [x] entries (skipping any already there); issues into ISSUES.md, prs into PRS.md")

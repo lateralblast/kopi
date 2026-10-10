@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.8.3
+Version: 0.8.4
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -62,6 +62,7 @@ cd ~/code/my-repo
 # Working on items
 ./kopi.py --list todo|inprogress|done [--local]              # list the project's items by status (or the matching entries in TODO.md)
 ./kopi.py --list issues|prs [--local]                        # list the project's issue / PR items (or the entries in ISSUES.md / PRS.md)
+./kopi.py --list releases [--local]                          # list the repo's GitHub releases (or the versions in CHANGELOG.md)
 ./kopi.py --done ITEM [--dry-run]                            # move one board item to Done (ITEM: id or title text)
 ./kopi.py --start ITEM [--dry-run]                           # move one board item to In Progress
 ./kopi.py --move ITEM STATUS [--dry-run]                     # move one board item to any Status (Todo, In Progress, Done, ...)
@@ -164,7 +165,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--sync`: `{project, dry_run, update, squash}` (the `--update` and `--squash` results).
 - `--export todo|inprogress|done`: `{project, dry_run, file, added, already_present}`; `--export issues` / `prs`: `{project, dry_run, file, changed, issues|prs}`; `--import issues`: `{repo, dry_run, created: [{title, url?, closed, labels}], existing, unknown_labels}`.
 - `--squash`: `{project, dry_run, ticked: [{title, from}], issues: {file, changed, skipped, count} | null}`.
-- `--list`: an array of items, as under [`--list`](#listing-items---list).
+- `--list`: an array of items, as under [`--list`](#listing-items---list); `--list releases`: `[{tag, name, date, latest, draft, prerelease, url}]` (with `--local`: `[{version, date, entries}]`).
 - `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--open`: `{project, repo, dry_run, created: {title, url, number, item_id} | null}` (with `--local`: `{file, dry_run, created: {title, labels}}`); `--close`: `{repo, dry_run, closed: [{number, title, url}]}` (with `--local`: `{file, dry_run, closed: [{title, number?, url?}]}`); `--reopen`: `{repo, dry_run, reopened: [{number, title, url}], board: {project?, action}}` (`action` is `moved`, `added`, `unchanged` or `skipped`); `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}], annotated?}`; `--promote-all`: the same plus `failed: [{title, id, error}]`; `annotated` (with `--annotate`) is `[{title, number, entry}]`.
 - `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--dedupe`: `{project, dry_run, deleted}`.
 - `--import`, `--update`, `--done`, `--start` and `--move` also report `dates: [{title, field, date}]` when they set any. `--setup-dates`: `{project, dry_run, created: [{field}], existing: [{field, type}]}`; `--backfill-dates`: `{project, dry_run, set: [{title, field, date}]}`.
@@ -328,6 +329,8 @@ By default `--import` and `--update` process both `CHANGELOG.md` and `TODO.md`, 
 Add `--local` to list entries from the local `TODO.md` instead, one title per line: `--list todo --local` gives the open entries (the `[ ]` checkbox, matching the Todo status on the board), `--list inprogress --local` the `[~]` ones and `--list done --local` the ticked ones (`[x]`). The changelog is not read. `--local` reads the file only, so it needs no GitHub access, no login and no network. It reads `TODO.md` in the current directory.
 
 `kopi --list issues` and `kopi --list prs` list the project's issue or pull request items instead, whatever their status: `id`, title and URL per line (the other kinds list by status). With `--local` they read `ISSUES.md` / `PRS.md` and print the title and, when the entry has a link, its URL. This is the same split `--export issues` / `--export prs` use.
+
+`kopi --list releases` (or `release`) lists the repo's **GitHub releases**, newest first, one per line: the tag, the date, flags (`latest`, `draft`, `pre-release`, or `-`) and the name, tab-separated, for example `0.8.2`, `2026-10-10`, `latest`, `0.8.2`. It needs the repo's `origin` and a login. With `--local` it lists the dated versions in `CHANGELOG.md` instead (version, date and number of entries) with no GitHub access, so putting the two side by side shows which versions you have not released yet (create one with [`--release`](#creating-a-release---release)).
 
 With `--json`, both forms print an array: `{id, status, title, url?}` for the project and `{status, title}` for the file. Comparing the two lists is a quick way to see where the board and the file disagree; `--diff` does that in full.
 

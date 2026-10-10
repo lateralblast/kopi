@@ -4,9 +4,16 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Open
 
+- [ ] Create the Roadmap view for the `kopi` and `druid` projects in the web UI (layout Roadmap, Started and Completed as the date fields); the API cannot do it.
+- [ ] Check the Mermaid chart in the README (and a generated `ROADMAP.md`) in GitHub's renderer; it has only been checked against the syntax.
+- [ ] Decide what to do with the test release `0.8.2` (it points at a commit without `tests/`): keep it, move it, or delete it.
+- [ ] A `[release]` section in `.kopi.toml` (for example a default tag prefix such as `v`) so `--release` does not need `--tag v...` every time.
+- [ ] Make `--report` read better for a repo whose whole record is a changelog (it says "1 done" next to 50 changelog entries in history).
+- [ ] Speed up imports further: stop polling for up to 30 s after the writes, which is now the largest part of an import.
 
 ## Done
 
+- [x] Ran `kopi --sync` on the `kopi` board: 61 items added, 1 moved to Done, 108 dates set in 57 seconds (125 items, no duplicates), and `ISSUES.md` created.
 - [x] `--tag TAG` for `--release`, defaulting to the plain changelog version number, with tests.
 - [x] `--release [TAG]` creates a GitHub release at the last commit with the changelog section as notes, with tests; dry run checked live.
 - [x] `--gantt` Gantt chart of the Roadmap (Mermaid in Markdown, raw Mermaid or SVG; per-release and per-item views), with tests; rendered and checked on the druid board.

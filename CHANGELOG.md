@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-11
+
+### Changed
+- Ran `kopi --sync` on the `kopi` project itself: 61 items added (the changelog entries from 0.5.0 onwards and recent `TODO.md` items), 1 moved to Done and 108 Started / Completed dates set in 57 seconds. The board now has 125 items with no duplicate titles, and `ISSUES.md` was created. `--diff` shows three old drafts that exist only on the board, which `--archive` can retire.
+
 ## [0.8.2] - 2026-10-11
 
 ### Changed

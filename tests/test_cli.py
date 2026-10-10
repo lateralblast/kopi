@@ -1,4 +1,5 @@
 import json
+import os
 from unittest import mock
 
 import pytest
@@ -1488,3 +1489,271 @@ def test_close_already_closed_dry_run_json_and_errors(capsys):
     assert "matched 2 issues" in err and "#2\tLogin fails on mobile" in err and "matched 0 issues" in err
     with pytest.raises(SystemExit):
         cli.main(["--close", "1", "--update"])
+
+
+CONFIG_SAMPLE = """# kopi settings
+owner = "acme"
+project = "Roadmap"   # the board's title
+
+[status]
+Todo = "Backlog"
+"In Progress" = 'Doing'
+
+[sources]
+code_comments = true
+
+[comments]
+tags = ["TODO", "FIXME",
+        "HACK"]
+exclude = ["vendor/*", "*.min.js"]
+"""
+
+
+def test_toml_subset_parser_matches_tomllib():
+    expected = {"owner": "acme", "project": "Roadmap", "status": {"Todo": "Backlog", "In Progress": "Doing"},
+                "sources": {"code_comments": True},
+                "comments": {"tags": ["TODO", "FIXME", "HACK"], "exclude": ["vendor/*", "*.min.js"]}}
+    assert cli.parse_toml_subset(CONFIG_SAMPLE) == expected
+    try:
+        import tomllib
+    except ImportError:
+        return
+    assert tomllib.loads(CONFIG_SAMPLE) == expected  # the fallback agrees with the real parser
+    with pytest.raises(ValueError):
+        cli.parse_toml_subset("x = {a = 1}")
+
+
+def test_load_config_validates(tmp_path, capsys):
+    path = tmp_path / ".kopi.toml"
+    assert cli.load_config(str(path)) == {}                      # missing is fine by default
+    with pytest.raises(cli.GhError):
+        cli.load_config(str(path), required=True)
+    path.write_text('owner = "me"\ncolour = "red"\n[sources]\nreleases = true\nnope = 1\n')
+    assert cli.load_config(str(path))["owner"] == "me"
+    assert "unknown setting 'colour'" in capsys.readouterr().err
+    path.write_text("owner = 3\n")
+    with pytest.raises(cli.GhError, match="owner must be a str"):
+        cli.load_config(str(path))
+    path.write_text("owner = \n")
+    with pytest.raises(cli.GhError):
+        cli.load_config(str(path))
+    path.write_text("[sources]\nreleases = \"yes\"\n")
+    with pytest.raises(cli.GhError, match="sources.releases must be a bool"):
+        cli.load_config(str(path))
+
+
+def test_config_supplies_owner_project_and_status_map(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".kopi.toml").write_text(CONFIG_SAMPLE.replace('Todo = "Backlog"', 'Todo = "Icebox"'))
+    items = [{"id": "B1", "title": "Parked", "status": "Icebox"}]  # not a built-in synonym, so only the config explains it
+
+    def fake(*a):
+        return {"list": {"projects": [{"number": 2, "title": "kopi", "url": "u"}, {"number": 5, "title": "Roadmap", "url": "u5"}]},
+                "item-list": {"items": [dict(i) for i in items]}}[a[1]]
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="lateralblast"), \
+         mock.patch("kopi.git_repo", return_value=("lateralblast", "kopi")), \
+         mock.patch("kopi.run_json", side_effect=fake) as rj:
+        assert cli.main(["--json", "--list", "todo"]) == 0
+        cap = capsys.readouterr()
+        assert [r["id"] for r in json.loads(cap.out)] == ["B1"]            # Icebox -> Todo via [status]
+        assert "Using owner: acme (from .kopi.toml)" in cap.err
+        assert all(c.args[c.args.index("--owner") + 1] == "acme" for c in rj.call_args_list)
+        assert any(c.args[:3] == ("project", "item-list", "5") for c in rj.call_args_list)  # the "Roadmap" project
+        rj.reset_mock()
+        assert cli.main(["--owner", "flag-wins", "--json", "--list", "todo"]) == 0           # flags beat the file
+        assert all(c.args[c.args.index("--owner") + 1] == "flag-wins" for c in rj.call_args_list)
+        capsys.readouterr()
+        assert cli.main(["--status-map", "Todo=Other", "--json", "--list", "todo"]) == 0
+        assert json.loads(capsys.readouterr().out) == []                     # the flag replaced [status]: Icebox is no longer Todo
+
+
+def test_explicit_missing_config_is_an_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["--config", "nope.toml", "--list", "todo"]) == 1
+    assert "no such config file" in capsys.readouterr().err
+
+
+F = "FIX" + "ME"
+T = "TO" + "DO"  # keeps this file's own lines from looking like code comments to kopi --code-comments
+
+
+def _tree(tmp_path):
+    (tmp_path / "a.py").write_text(f"x = 1  # {T}: handle rate limits\n# {F}(bob): breaks on empty input\n"
+                                   f'print("{T}: not a comment")\n# {T} heading without a colon\n')
+    (tmp_path / "b.js").write_text(f"// {T}: handle rate limits\n/* {T}: close the socket */\n")
+    (tmp_path / "README.md").write_text(f"# {T}: docs are not scanned\n")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "gen_x.py").write_text(f"# {T}: generated\n")
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / ".hidden" / "h.py").write_text(f"# {T}: hidden\n")
+
+
+def test_scan_code_comments(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tree(tmp_path)
+    got = cli.scan_code_comments()
+    assert [(p, n, t, x) for p, n, t, x in got if "gen_x" not in p] == [
+        ("a.py", 1, T, "handle rate limits"), ("a.py", 2, "FIXME", "breaks on empty input"),
+        ("b.js", 1, T, "handle rate limits"), ("b.js", 2, T, "close the socket")]
+    # .kopi.toml's [comments]: other tags, include globs, extra excludes
+    cfg = {"comments": {"tags": [T], "include": ["*.py", "*.js"], "exclude": ["gen_*"]}}
+    assert sorted({x for *_, x in cli.scan_code_comments(cfg)}) == ["close the socket", "handle rate limits"]
+
+
+def test_code_comment_items_are_keyed_by_text(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tree(tmp_path)
+    items = {t: (st, b) for st, t, b in cli.code_comment_items()}
+    st, body = items["[code] handle rate limits"]
+    assert st == "Todo" and f"{T}: handle rate limits" in body and "a.py:1" in body and "b.js:1" in body  # one item, two places
+    assert len(items) == 4  # incl. pkg/gen_x.py: only an `exclude` in .kopi.toml hides it
+
+
+def test_code_comments_are_opt_in_and_not_re_added(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _tree(tmp_path)
+    _run_update(SETTLED, argv=("--json", "--update", "--dry-run"))
+    assert json.loads(capsys.readouterr().out)["added"] == []                   # off by default
+    _run_update(SETTLED, argv=("--json", "--update", "--dry-run", "--code-comments"))
+    added = json.loads(capsys.readouterr().out)["added"]
+    assert sorted(a["title"] for a in added if a["title"].startswith("[code] ")) == [
+        "[code] breaks on empty input", "[code] close the socket", "[code] generated", "[code] handle rate limits"]
+    board = SETTLED + [{"id": "C1", "title": "[code] handle rate limits", "status": "Todo"}]
+    _run_update(board, argv=("--json", "--update", "--dry-run", "--code-comments"))
+    assert "[code] handle rate limits" not in [a["title"] for a in json.loads(capsys.readouterr().out)["added"]]
+
+
+def test_removed_code_comment_is_an_orphan_only_while_the_source_is_on(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _tree(tmp_path)
+    board = SETTLED + [{"id": "G", "title": "[code] long gone", "status": "Todo", "content": {"type": "DraftIssue"}}]
+    _run_update(board, argv=("--json", "--diff", "--code-comments"))
+    assert [i["title"] for i in json.loads(capsys.readouterr().out)["board_only"]] == ["[code] long gone"]
+    _run_update(board, argv=("--json", "--diff"))   # source off: --archive must not sweep these away
+    assert json.loads(capsys.readouterr().out)["board_only"] == []
+
+
+def test_release_items_skip_versions_in_the_changelog(capsys):
+    changelog = "## [0.3.8] - 2026-01-01\n\n### Added\n- Something.\n"
+    with mock.patch("kopi.run", return_value="v0.3.9\nv0.3.8\n0.1.0\n") as run:
+        items = cli.release_items("me/r", changelog)
+    assert run.call_args.args[:2] == ("api", "repos/me/r/tags")
+    assert items == [("Done", "[release] v0.3.9", ""), ("Done", "[release] 0.1.0", "")]
+    with mock.patch("kopi.run", side_effect=cli.GhError("nope")):
+        assert cli.release_items("me/r", changelog) == []
+    assert "could not list tags" in capsys.readouterr().err
+
+
+def test_releases_never_complete_an_open_item_by_fuzzy_match(capsys):
+    board = SETTLED + [{"id": "OPEN", "title": "Fix the crash in v9.9.9 handling", "status": "Todo", "content": {"type": "DraftIssue"}}]
+    with mock.patch("kopi.release_items", return_value=[("Done", "[release] v9.9.9", "")]):
+        rc, rj, run = _run_update(board, argv=("--json", "--update", "--dry-run", "--releases"))
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and [a["title"] for a in data["added"]] == ["[release] v9.9.9"]
+    assert data["moved"] == []  # exact title match only: the open item is not moved to Done by the release
+
+
+REPORT_BOARD = [
+    {"id": "H1", "title": "[0.0.1] Old release entry.", "status": "Done"},
+    {"id": "D1", "title": "Draft done", "status": "Done", "content": {"type": "DraftIssue"}},
+    {"id": "D2", "title": "Draft doing", "status": "In Progress", "content": {"type": "DraftIssue"}},
+    {"id": "I1", "title": "An issue", "status": "Todo", "content": {"type": "Issue", "number": 1, "repository": "o/kopi"}},
+    {"id": "P1", "title": "A PR", "status": "Done", "content": {"type": "PullRequest", "number": 2, "repository": "o/kopi"}},
+    {"id": "N1", "title": "No status item", "status": None, "content": {"type": "DraftIssue"}},
+]
+
+
+def test_report_json(capsys):
+    rc, _, _ = _run_update(REPORT_BOARD, argv=("--json", "--report"))
+    r = json.loads(capsys.readouterr().out)
+    assert rc == 0 and r["project"]["number"] == 2
+    assert r["counts"] == {"todo": 1, "in_progress": 1, "done": 2, "other": 1, "history": 1}  # history is not work
+    assert r["percent_done"] == 50 and r["by_type"] == {"drafts": 3, "issues": 1, "prs": 1}
+    assert r["in_progress"] == ["Draft doing"] and r["todo"] == ["An issue"]
+    assert r["releases"] and r["releases"][0]["entries"] > 0 and isinstance(r["differences"], int)
+
+
+def test_report_text_and_markdown(capsys):
+    _run_update(REPORT_BOARD, argv=("--report",))
+    out = capsys.readouterr().out
+    assert "Project #2: kopi" in out and "50% done: 2 done, 1 in progress, 1 todo, 1 without a status" in out
+    assert "3 drafts, 1 issue, 1 pull request" in out and "In progress (1):\n  - Draft doing" in out
+    _run_update(REPORT_BOARD, argv=("--report", "markdown"))
+    md = capsys.readouterr().out
+    assert md.startswith("# kopi (project #2)") and "## Progress" in md and "- Draft doing" in md
+    with pytest.raises(SystemExit):
+        cli.main(["--report", "pdf"])
+
+
+def test_report_without_files_or_work(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    with mock.patch("kopi.sync_plan", side_effect=cli.GhError("nothing to compare")), \
+         mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="o"), \
+         mock.patch("kopi.git_repo", return_value=("o", "kopi")), \
+         mock.patch("kopi.run_json", side_effect=lambda *a: {"projects": [{"number": 2, "title": "kopi", "url": "u"}]}
+                    if a[1] == "list" else {"items": []}):
+        assert cli.main(["--report"]) == 0
+    out = capsys.readouterr().out
+    assert "no work items yet" in out and "not compared" in out
+
+
+def _rollup_run(argv, boards, repos, owner_calls=None):
+    """boards: {project number: items}; repos: {dir name: (owner, repo) or None}."""
+    projects = [{"number": 2, "title": "kopi", "url": "u2"}, {"number": 3, "title": "Roadmap", "url": "u3"},
+                {"number": 4, "title": "old", "url": "u4", "closed": True}]
+
+    def fake(*a):
+        if owner_calls is not None:
+            owner_calls.append(a[a.index("--owner") + 1])
+        return {"projects": projects} if a[1] == "list" else {"items": [dict(i) for i in boards[int(a[2])]]}
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="lateralblast"), \
+         mock.patch("kopi.git_repo", side_effect=lambda path=None: repos.get(os.path.basename(path or "."))), \
+         mock.patch("kopi.run_json", side_effect=fake):
+        return cli.main(argv)
+
+
+ROLLUP_BOARDS = {
+    2: [{"id": "a", "title": "x", "status": "Todo"}, {"id": "b", "title": "y", "status": "Done"},
+        {"id": "h", "title": "[0.0.1] history", "status": "Done"}],
+    3: [{"id": "c", "title": "z", "status": "Icebox"}, {"id": "d", "title": "w", "status": "In Progress"}],
+    4: [{"id": "e", "title": "closed project", "status": "Todo"}],
+}
+
+
+def test_rollup_every_open_project_under_the_owner(capsys):
+    assert _rollup_run(["--json", "--rollup"], ROLLUP_BOARDS, {}) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert [p["number"] for p in data["projects"]] == [2, 3]                      # the closed project is left out
+    assert data["projects"][0]["counts"] == {"todo": 1, "in_progress": 0, "done": 1, "other": 0, "history": 1}
+    assert data["total"] == {"todo": 1, "in_progress": 1, "done": 1, "other": 1, "history": 1}  # "Icebox" is not a known status
+    assert _rollup_run(["--rollup"], ROLLUP_BOARDS, {}) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("OWNER\tNUMBER\tTITLE\tTODO") and out[1].startswith("lateralblast\t2\tkopi\t1\t0\t1\t50%\t1")
+    assert out[-1].startswith("TOTAL\t2 projects")
+
+
+def test_rollup_directories_use_each_repos_own_settings(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    for name in ("kopi", "other", "plain"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "other" / ".kopi.toml").write_text('project = "Roadmap"\nowner = "acme"\n[status]\nTodo = "Icebox"\n')
+    repos = {"kopi": ("lateralblast", "kopi"), "other": ("lateralblast", "other")}  # "plain" has no origin
+    owners = []
+    assert _rollup_run(["--json", "--rollup", "kopi", "other", "plain", "missing"], ROLLUP_BOARDS, repos, owners) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert [(p["owner"], p["number"], p["where"]) for p in data["projects"]] == [("lateralblast", 2, "kopi"), ("acme", 3, "other")]
+    assert data["projects"][1]["counts"]["todo"] == 1 and data["projects"][1]["counts"]["other"] == 0  # its own Status names
+    assert [s["where"] for s in data["skipped"]] == ["plain", "missing"]
+    owners.clear()
+    _rollup_run(["--json", "--owner", "flag", "--rollup", "kopi", "other"], ROLLUP_BOARDS, repos, owners)
+    assert set(owners) == {"flag"}                                                   # an explicit --owner beats every repo's own
+
+
+def test_rollup_repos_from_config_and_exclusive(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "kopi").mkdir()
+    (tmp_path / ".kopi.toml").write_text('repos = ["kopi"]\n')
+    assert _rollup_run(["--json", "--rollup"], ROLLUP_BOARDS, {"kopi": ("lateralblast", "kopi")}) == 0
+    assert [p["number"] for p in json.loads(capsys.readouterr().out)["projects"]] == [2]
+    with pytest.raises(SystemExit):
+        cli.main(["--rollup", "--update"])

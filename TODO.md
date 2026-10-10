@@ -4,10 +4,13 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Open
 
-- [ ] Consider opt-in import of TODO/FIXME code comments and GitHub releases/tags (notes in [RESEARCH.md](RESEARCH.md)).
 
 ## Done
 
+- [x] `--rollup` multi-repo status roll-up (directories, `repos` in `.kopi.toml`, or all open projects under the owner), with tests; run live.
+- [x] `--report` progress summary (text, markdown and JSON), with tests; run live.
+- [x] Opt-in `--code-comments` and `--releases` sources (and `[sources]` / `[comments]` settings), with tests.
+- [x] `.kopi.toml` config file (owner, project title, Status names), with tests.
 - [x] `--close ISSUE` closes a GitHub issue, with tests.
 - [x] Raise the fixed lookup caps and warn when one is hit; `--import issues` labels; `--list issues|prs`; `--status-map` and recognised custom Status names, with tests.
 - [x] `--diff --check` exit status, `--sync`, `--start ITEM` and `--move ITEM STATUS`, with tests.

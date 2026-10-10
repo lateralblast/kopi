@@ -9,7 +9,9 @@ Copyright (c) Richard Spindler. Licensed under CC BY-NC-SA 4.0:
 https://creativecommons.org/licenses/by-nc-sa/4.0/ (see LICENSE.md)
 """
 import argparse
+import copy
 import datetime
+import fnmatch
 import json
 import os
 import re
@@ -18,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.6.2"
+__version__ = "0.6.6"
 
 
 class GhError(RuntimeError):
@@ -58,10 +60,11 @@ def check_auth():
         raise GhError("Token is missing the 'project' scope. Run:\n  gh auth refresh -s project")
 
 
-def git_repo():
-    """(owner, repo) of the current git repo's github.com `origin` remote, or None."""
+def git_repo(path=None):
+    """(owner, repo) of the github.com `origin` remote of the git repo in `path` (default: the current one), or None."""
     try:
-        proc = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True)
+        proc = subprocess.run(["git", *(["-C", path] if path else []), "remote", "get-url", "origin"],
+                              capture_output=True, text=True)
     except FileNotFoundError:
         return None
     if proc.returncode != 0:
@@ -156,6 +159,116 @@ def board_items(args, number):
     return items
 
 
+CONFIG_FILE = ".kopi.toml"
+CONFIG_KEYS = {"owner": str, "project": str, "status": dict, "sources": dict, "comments": dict, "repos": list}
+SOURCES_KEYS = {"code_comments": bool, "releases": bool}
+COMMENTS_KEYS = {"tags": list, "include": list, "exclude": list}
+
+
+def _toml_value(raw):
+    """One TOML value from the subset the fallback parser supports: strings, integers, booleans, flat arrays."""
+    raw = raw.strip()
+    if raw in ("true", "false"):
+        return raw == "true"
+    if re.fullmatch(r"[+-]?\d+", raw):
+        return int(raw)
+    if raw[:1] == '"' and raw[-1:] == '"' and len(raw) >= 2:
+        return re.sub(r'\\(["\\nt])', lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), raw[1:-1])
+    if raw[:1] == "'" and raw[-1:] == "'" and len(raw) >= 2:
+        return raw[1:-1]
+    if raw[:1] == "[" and raw[-1:] == "]":
+        parts = re.findall(r'"(?:[^"\\]|\\.)*"|\'[^\']*\'|[^,\s][^,]*', raw[1:-1])
+        return [_toml_value(p) for p in parts]
+    raise ValueError(f"unsupported value {raw!r}")
+
+
+def _strip_toml_comment(line):
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote and line[i - 1] != "\\":
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#":
+            return line[:i]
+    return line
+
+
+def parse_toml_subset(text):
+    """Parse the TOML subset .kopi.toml uses, for Pythons without tomllib (before 3.11): `[table]` headers
+    (dotted ok), `key = value` with bare or quoted keys, and strings, integers, booleans and arrays of them
+    (arrays may span lines). Inline tables and the rest of TOML raise ValueError."""
+    data, table, pending = {}, None, ""
+    table = data
+    for n, line in enumerate(text.splitlines(), 1):
+        line = (pending + " " + _strip_toml_comment(line).strip()).strip()
+        pending = ""
+        if not line:
+            continue
+        if line.startswith("[") and not line.startswith("[[") and line.endswith("]") and "=" not in line:
+            table = data
+            for part in (p.strip().strip('"\'') for p in line[1:-1].split(".")):
+                table = table.setdefault(part, {})
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            raise ValueError(f"line {n}: expected key = value")
+        if value.strip().startswith("[") and value.count("[") > value.count("]"):
+            pending = line  # an array continuing on the next line
+            continue
+        key = key.strip()
+        if key[:1] in "\"'" and key[-1:] == key[:1] and len(key) >= 2:
+            key = key[1:-1]
+        try:
+            table[key] = _toml_value(value)
+        except ValueError as e:
+            raise ValueError(f"line {n}: {e}")
+    if pending:
+        raise ValueError("unterminated array")
+    return data
+
+
+def load_config(path, required=False):
+    """The settings in a .kopi.toml (see README), validated. {} when the file is missing and not `required`."""
+    if not os.path.isfile(path):
+        if required:
+            raise GhError(f"no such config file: {path}")
+        return {}
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        try:
+            import tomllib
+            cfg = tomllib.loads(raw.decode())
+        except ImportError:
+            cfg = parse_toml_subset(raw.decode())
+    except (ValueError, OSError) as e:  # tomllib.TOMLDecodeError is a ValueError
+        raise GhError(f"{path}: {e}")
+    for key, value in cfg.items():
+        if key not in CONFIG_KEYS:
+            print(f"warning: {path}: unknown setting {key!r} ignored", file=sys.stderr)
+        elif not isinstance(value, CONFIG_KEYS[key]):
+            raise GhError(f"{path}: {key} must be a {CONFIG_KEYS[key].__name__}")
+    for table, known in (("sources", SOURCES_KEYS), ("comments", COMMENTS_KEYS)):
+        for key, value in (cfg.get(table) or {}).items():
+            if key not in known:
+                print(f"warning: {path}: unknown setting {table}.{key} ignored", file=sys.stderr)
+            elif not isinstance(value, known[key]):
+                raise GhError(f"{path}: {table}.{key} must be a {known[key].__name__}")
+    return cfg
+
+
+def apply_config(args, cfg):
+    """Fill in args from a config dict wherever the command line left a setting unset (flags win)."""
+    args.config_data = cfg
+    if args.status_map is None and cfg.get("status"):
+        args.status_map = parse_status_map(",".join(f"{k}={v}" for k, v in cfg["status"].items()))
+    sources = cfg.get("sources") or {}
+    args.code_comments = args.code_comments or bool(sources.get("code_comments"))
+    args.releases = args.releases or bool(sources.get("releases"))
+
+
 def _owner(args):
     return ["--owner", args.owner] if args.owner else []
 
@@ -233,13 +346,20 @@ def cmd_create(args):
     emit(args, {"number": p["number"], "url": p["url"], "linked_repo": linked})
 
 
-def find_project(args):
-    """Return (project or None, (repo_owner, repo_name)) for the project named after the current repo."""
-    repo = git_repo()
+def project_title(args, repo):
+    """The title kopi looks for (and creates): `project` from .kopi.toml, else the repo name."""
+    return (getattr(args, "config_data", None) or {}).get("project") or repo[1]
+
+
+def find_project(args, repo=None):
+    """Return (project or None, (repo_owner, repo_name)) for the project named after the repo (default: the
+    current one), or titled by `project` in .kopi.toml."""
+    repo = repo or git_repo()
     if not repo:
         raise GhError("--init/--import/--update must be run inside a git repo with a github.com origin remote")
+    title = project_title(args, repo)
     data = run_json("project", "list", *_owner(args), "--limit", str(PROJECT_LIMIT))
-    return next((p for p in data["projects"] if p["title"] == repo[1]), None), repo
+    return next((p for p in data["projects"] if p["title"] == title), None), repo
 
 
 def ensure_project(args):
@@ -251,7 +371,7 @@ def ensure_project(args):
     if p:
         say(args, f"Project exists: #{p['number']} {p['title']} {p['url']}")
         return p["number"], False
-    args.title = name
+    args.title = project_title(args, (repo_owner, name))
     # gh only links a project to repos under the same owner
     args.repo = f"{repo_owner}/{name}" if args.owner == repo_owner else None
     if not args.repo:
@@ -373,6 +493,106 @@ def fetch_linked(repo):
     return linked
 
 
+CODE_PREFIX, RELEASE_PREFIX = "[code] ", "[release] "
+DEFAULT_COMMENT_TAGS = ("TODO", "FIXME")
+# docs and data files are not scanned by default: their "# TODO" lines are headings, not code comments
+DEFAULT_COMMENT_EXCLUDE = ("*.md", "*.txt", "*.rst", "*.json", "*.lock", "*.csv", "*.svg", "*.min.js", "*.min.css")
+SCAN_MAX_BYTES = 1_000_000
+SKIP_DIRS = {"node_modules", "venv", "__pycache__", "dist", "build", "vendor"}
+
+
+def source_files():
+    """Paths to scan for code comments: the files git tracks (so .gitignore, .venv and build output are skipped
+    for free), or, outside a git repo, every file under the current directory except hidden and vendored dirs."""
+    try:
+        proc = subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=True)
+        if proc.returncode == 0:
+            return sorted(p for p in proc.stdout.split("\0") if p)
+    except FileNotFoundError:
+        pass
+    found = []
+    for root, dirs, files in os.walk("."):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS]
+        found += [os.path.relpath(os.path.join(root, f)) for f in files if not f.startswith(".")]
+    return sorted(found)
+
+
+def _matches(path, patterns):
+    return any(fnmatch.fnmatch(path, p) or fnmatch.fnmatch(os.path.basename(path), p) for p in patterns)
+
+
+def scan_code_comments(cfg=None):
+    """[(path, line number, tag, text)] for each `TODO: text` / `FIXME(name): text` code comment.
+
+    Only comments count: the tag must follow a comment marker (#, //, /*, *, --, <!--, ;) and be followed by a
+    colon, which keeps prose and strings such as "# TODO" headings out. Tags and file globs come from the
+    `[comments]` table in .kopi.toml (tags, include, exclude).
+    """
+    cfg = (cfg or {}).get("comments") or {}
+    tags = cfg.get("tags") or DEFAULT_COMMENT_TAGS
+    include, exclude = cfg.get("include") or [], [*DEFAULT_COMMENT_EXCLUDE, *(cfg.get("exclude") or [])]
+    pattern = re.compile(r"(?:#|//|/\*|\*|<!--|--|;)\s*(" + "|".join(map(re.escape, tags)) + r")(?:\([^)]*\))?:\s*(\S.*?)\s*(?:\*/|-->)?\s*$")
+    found = []
+    for path in source_files():
+        if (include and not _matches(path, include)) or _matches(path, exclude):
+            continue
+        try:
+            if os.path.getsize(path) > SCAN_MAX_BYTES:
+                continue
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except (OSError, UnicodeDecodeError):  # unreadable, deleted but still listed, or binary
+            continue
+        for n, line in enumerate(lines, 1):
+            m = pattern.search(line)
+            if m:
+                found.append((path, n, m.group(1), m.group(2)))
+    return found
+
+
+def code_comment_items(cfg=None):
+    """[(status, title, body)] draft Todo items for the repo's code comments, one per distinct comment text.
+
+    The title is `[code] text`, so the text is the item's identity: moving a comment to another line or file keeps
+    its item, and the same comment in several places is one item whose body lists where.
+    """
+    by_text = {}
+    for path, n, tag, text in scan_code_comments(cfg):
+        by_text.setdefault(text, []).append((path, n, tag))
+    items = []
+    for text, places in by_text.items():
+        where = "\n".join(f"{p}:{n}" for p, n, _ in places[:20]) + (f"\n(+{len(places) - 20} more)" if len(places) > 20 else "")
+        items.append(("Todo", _title(CODE_PREFIX + text), f"{places[0][2]}: {text}\n\n{where}"))
+    return items
+
+
+def release_items(slug, changelog):
+    """[(status, title, body)] Done items for the repo's git tags, skipping tags whose version already has a
+    CHANGELOG.md entry (those are on the board as `[version] text`). A failed lookup is a warning."""
+    try:
+        tags = run("api", f"repos/{slug}/tags", "--paginate", "--jq", ".[].name").split()
+    except GhError as e:
+        print(f"warning: could not list tags for {slug}: {e}", file=sys.stderr)
+        return []
+    in_changelog = {v for v, _ in parse_changelog(changelog)}
+    return [("Done", _title(RELEASE_PREFIX + tag), "") for tag in tags if tag.lstrip("vV") not in in_changelog]
+
+
+def load_extras(args, changelog):
+    """[(status, title, body)] from the opt-in sources (--code-comments, --releases, or [sources] in .kopi.toml).
+    Skipped when a single source file was given (args.only)."""
+    if getattr(args, "only", None):
+        return []
+    extras = []
+    if args.code_comments:
+        extras += code_comment_items(getattr(args, "config_data", None))
+    if args.releases:
+        repo = git_repo()
+        if repo:
+            extras += release_items("/".join(repo), changelog)
+    return extras
+
+
 def _status_setter(args, number, needed):
     """Return set_status(item_id, status) for the project's Status field; error if an option is missing."""
     project_id = run_json("project", "view", str(number), *_owner(args))["id"]
@@ -424,9 +644,11 @@ def wait_for_items(args, number, ids):
 def cmd_import(args):
     """Seed an empty project from CHANGELOG.md and TODO.md (draft items) plus the repo's issues and PRs."""
     changelog, todo, linked = load_sources(args)
-    if not changelog and not todo and not linked:
+    extras = load_extras(args, changelog)
+    if not changelog and not todo and not linked and not extras:
         raise GhError("nothing to import: no CHANGELOG.md or TODO.md in the current directory, and no issues or PRs")
     plan, skipped = build_plan(changelog, todo, linked)
+    plan += extras
     total = len(plan) + len(linked)
     if args.dry_run:
         items = [_item(st, t) for st, t, _ in plan] + [_item(st, _title(t), u) for st, t, u in linked]
@@ -485,7 +707,8 @@ def sync_plan(args):
     [(item, todo text, todo status)] for TODO entries still open although their board item is Done.
     """
     changelog, todo, linked = load_sources(args)
-    if not changelog and not todo and not linked:
+    extras = load_extras(args, changelog)
+    if not changelog and not todo and not linked and not extras:
         raise GhError("nothing to compare: no CHANGELOG.md or TODO.md in the current directory, and no issues or PRs")
     plan, skipped = build_plan(changelog, todo)
     project, _ = find_project(args)
@@ -497,6 +720,9 @@ def sync_plan(args):
     # (status, title, body, is_changelog, can_add); skipped TODO items only advance a stale board copy
     entries = [(st, t, body, bool(CHANGELOG_TITLE.match(t)), True) for st, t, body in plan]
     entries += [("Done", _title(text), "", False, False) for text in skipped]
+    # opt-in sources (code comments, tags) match by exact title only, like changelog entries, and never feed the sweep
+    extra_idx = set(range(len(entries), len(entries) + len(extras)))
+    entries += [(st, t, body, True, True) for st, t, body in extras]
 
     # An exact title match wins; otherwise a TODO item may fuzzy-match an unclaimed item at 0.75+
     # overlap. Each board item matches at most one entry, so near-identical items are not conflated.
@@ -524,7 +750,7 @@ def sync_plan(args):
     open_items = [i for i in existing if i["id"] not in claimed and RANK.get(i.get("status"), -1) < RANK["Done"]]
     pairs = sorted(((overlap(CHANGELOG_TITLE.sub("", body or title), i["title"]), idx, i)
                     for idx, (status, title, body, _, _) in enumerate(entries)
-                    if idx not in matched and status == "Done" for i in open_items),
+                    if idx not in matched and idx not in extra_idx and status == "Done" for i in open_items),
                    key=lambda p: p[0], reverse=True)
     for score, idx, item in pairs:
         if score >= 0.6 and idx not in matched and item["id"] not in claimed:
@@ -556,7 +782,10 @@ def sync_plan(args):
             link_adds.append((status, title, url))
 
     matched_ids = {i["id"] for i in matched.values()}
-    orphans = [i for i in existing if i["id"] not in matched_ids and i["id"] not in linked_ids]
+    # items from an opt-in source that is switched off this run are not orphans, or --archive would sweep them away
+    off = tuple(p for p, on in ((CODE_PREFIX, args.code_comments), (RELEASE_PREFIX, args.releases)) if not on)
+    orphans = [i for i in existing if i["id"] not in matched_ids and i["id"] not in linked_ids
+               and not i["title"].startswith(off)]
     return SimpleNamespace(number=number, adds=adds, link_adds=link_adds, moves=moves, ahead=ahead, orphans=orphans, items=existing, ticks=ticks)
 
 
@@ -604,6 +833,15 @@ def cmd_update(args):
     emit(args, report)
 
 
+def diff_summary(p):
+    """(duplicates, orphans, counts) for a sync_plan result; counts is (files-only, github-only, board-only,
+    behind, ahead, duplicates)."""
+    dupes = find_duplicates(p.items)
+    extra_ids = {extra["id"] for _, extra in dupes}
+    orphans = [i for i in p.orphans if i["id"] not in extra_ids]  # a duplicate is reported once, as a duplicate
+    return dupes, orphans, (len(p.adds), len(p.link_adds), len(orphans), len(p.moves), len(p.ahead), len(dupes))
+
+
 CHECK_FAILED = 2  # --diff --check exit status when the board has drifted (1 is reserved for errors)
 
 
@@ -613,10 +851,7 @@ def cmd_diff(args):
     Returns CHECK_FAILED under --check when there is any difference, else 0 (for CI and pre-commit hooks).
     """
     p = sync_plan(args)
-    dupes = find_duplicates(p.items)
-    extra_ids = {extra["id"] for _, extra in dupes}
-    orphans = [i for i in p.orphans if i["id"] not in extra_ids]  # a duplicate is reported once, as a duplicate
-    counts = (len(p.adds), len(p.link_adds), len(orphans), len(p.moves), len(p.ahead), len(dupes))
+    dupes, orphans, counts = diff_summary(p)
     drift = any(counts)
     if args.json:
         emit(args, {"project": p.number,
@@ -1072,6 +1307,143 @@ def cmd_close(args):
     emit(args, report)
 
 
+def changelog_releases(text, limit=5):
+    """[{version, date, entries}] for the newest `## [version] - date` sections of a changelog, in file order
+    (the newest first, by Keep a Changelog convention). `date` is None when the heading has none."""
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"## \[(.+?)\](?:\s*-\s*(\S+))?", line)
+        if m:
+            out.append({"version": m.group(1), "date": m.group(2), "entries": 0})
+        elif out and line.startswith("- "):
+            out[-1]["entries"] += 1
+    return [r for r in out if r["entries"]][:limit]
+
+
+def status_counts(items):
+    """(work items, counts) for board items, with counts {todo, in_progress, done, other, history}.
+
+    The board's `[version] ...` changelog entries are history, not work, so they are counted apart."""
+    history = [i for i in items if CHANGELOG_TITLE.match(i["title"])]
+    work = [i for i in items if i not in history]
+    counts = {"todo": 0, "in_progress": 0, "done": 0, "other": 0, "history": len(history)}
+    for i in work:
+        counts[{"Todo": "todo", "In Progress": "in_progress", "Done": "done"}.get(i.get("status"), "other")] += 1
+    return work, counts
+
+
+def build_report(args):
+    """The data behind --report: counts by status, by kind of item, open work, recent releases and how far the
+    board is from the files."""
+    project, _ = find_project(args)
+    if not project:
+        raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
+    items = board_items(args, project["number"])
+    work, counts = status_counts(items)
+    tracked = counts["todo"] + counts["in_progress"] + counts["done"]
+    kinds = [(i.get("content") or {}).get("type") for i in work]
+    try:
+        differences = sum(diff_summary(sync_plan(args))[2])
+    except GhError:  # no CHANGELOG.md / TODO.md to compare with
+        differences = None
+    return {"project": {"number": project["number"], "title": project["title"], "url": project.get("url")},
+            "counts": counts, "percent_done": round(100 * counts["done"] / tracked) if tracked else None,
+            "by_type": {"drafts": kinds.count("DraftIssue"), "issues": kinds.count("Issue"),
+                        "prs": kinds.count("PullRequest")},
+            "in_progress": [i["title"] for i in work if i.get("status") == "In Progress"],
+            "todo": [i["title"] for i in work if i.get("status") == "Todo"],
+            "releases": changelog_releases(_read("CHANGELOG.md")), "differences": differences}
+
+
+def _n(count, noun):
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
+def render_report(r, markdown=False):
+    """The --report text (plain or Markdown) for build_report data."""
+    c, p = r["counts"], r["project"]
+    pct = f"{r['percent_done']}% done" if r["percent_done"] is not None else "no work items yet"
+    h = (lambda t: f"## {t}") if markdown else (lambda t: t + ":")
+    bullet = "- " if markdown else "  - "
+    out = [f"# {p['title']} (project #{p['number']})" if markdown else f"Project #{p['number']}: {p['title']}", p["url"] or "", ""]
+    out += [h("Progress"), f"{pct}: {c['done']} done, {c['in_progress']} in progress, {c['todo']} todo"
+            + (f", {c['other']} without a status" if c["other"] else "") + f" ({c['history']} changelog entries in history)", ""]
+    t = r["by_type"]
+    out += [h("Items"), f"{_n(t['drafts'], 'draft')}, {_n(t['issues'], 'issue')}, {_n(t['prs'], 'pull request')}", ""]
+    for title, names in (("In progress", r["in_progress"]), ("Todo", r["todo"])):
+        if names:
+            out += [h(f"{title} ({len(names)})"), *(f"{bullet}{n}" for n in names[:10]),
+                    *([f"{bullet}... and {len(names) - 10} more"] if len(names) > 10 else []), ""]
+    if r["releases"]:
+        out += [h("Recent releases"), *(f"{bullet}{x['version']}" + (f" ({x['date']})" if x["date"] else "")
+                                        + f": {_n(x['entries'], 'entry').replace('entrys', 'entries')}" for x in r["releases"]), ""]
+    d = r["differences"]
+    out += [h("Board vs files"), "not compared (no CHANGELOG.md or TODO.md)" if d is None
+            else "in sync" if d == 0 else f"{_n(d, 'difference')} (see --diff)"]
+    return "\n".join(out)
+
+
+def cmd_report(args):
+    """--report [text|markdown]: a progress summary of the project. Read-only; --json prints the data."""
+    report = build_report(args)
+    if args.json:
+        emit(args, report)
+        return
+    print(render_report(report, markdown=args.report == "markdown"))
+
+
+def _rollup_row(sub, project, owner, where):
+    _, counts = status_counts(board_items(sub, project["number"]))
+    return {"owner": owner, "number": project["number"], "title": project["title"], "url": project.get("url"),
+            "where": where, "counts": counts}
+
+
+def cmd_rollup(args):
+    """--rollup [DIR ...]: status counts for several projects at once, with totals. Read-only.
+
+    With directories (or `repos = [...]` in .kopi.toml) it looks up each repo's project from that directory's git
+    origin, honouring that repo's own .kopi.toml (owner, project title, Status names) unless a flag overrides it.
+    With neither, it covers every open project under the owner. Changelog entries are counted as history, not work.
+    """
+    dirs = args.rollup or (args.config_data.get("repos") or [])
+    rows, skipped = [], []
+    if dirs:
+        for d in dirs:
+            repo = git_repo(d) if os.path.isdir(d) else None
+            if not repo:
+                skipped.append({"where": d, "reason": "not a directory with a github.com origin"})
+                continue
+            sub = copy.copy(args)
+            sub.owner = args.cli_owner or repo[0]  # an explicit --owner applies to every repo, else each repo's own
+            sub.status_map = args.cli_status_map
+            apply_config(sub, load_config(os.path.join(d, CONFIG_FILE)))
+            if not args.cli_owner and sub.config_data.get("owner"):
+                sub.owner = sub.config_data["owner"]
+            project, _ = find_project(sub, repo)
+            if not project:
+                skipped.append({"where": d, "reason": f"no project for {repo[0]}/{repo[1]} under {sub.owner}"})
+                continue
+            rows.append(_rollup_row(sub, project, sub.owner, d))
+    else:
+        data = run_json("project", "list", *_owner(args), "--limit", str(PROJECT_LIMIT))
+        rows = [_rollup_row(args, p, args.owner, "") for p in data["projects"] if not p.get("closed")]
+    total = {k: sum(r["counts"][k] for r in rows) for k in ("todo", "in_progress", "done", "other", "history")}
+    if args.json:
+        emit(args, {"projects": rows, "total": total, "skipped": skipped})
+        return
+    for sk in skipped:
+        print(f"warning: skipped {sk['where']}: {sk['reason']}", file=sys.stderr)
+
+    def pct(c):
+        tracked = c["todo"] + c["in_progress"] + c["done"]
+        return f"{round(100 * c['done'] / tracked)}%" if tracked else "-"
+    print("OWNER\tNUMBER\tTITLE\tTODO\tIN PROGRESS\tDONE\tDONE%\tHISTORY")
+    for r in rows:
+        c = r["counts"]
+        print(f"{r['owner']}\t{r['number']}\t{r['title']}\t{c['todo']}\t{c['in_progress']}\t{c['done']}\t{pct(c)}\t{c['history']}")
+    print(f"TOTAL\t{len(rows)} projects\t\t{total['todo']}\t{total['in_progress']}\t{total['done']}\t{pct(total)}\t{total['history']}")
+
+
 def cmd_sync(args):
     """--sync: bring the board and the files level in both directions: --update (files and GitHub -> board), then
     --squash (board -> TODO.md ticks). The --export modes stay separate because they write new files/entries.
@@ -1441,10 +1813,17 @@ def build_parser():
     p.add_argument("--dedupe", nargs="?", const=".", metavar="PATH",
                    help="delete duplicate board items (same title or URL), keeping the one furthest along; "
                         "uses the repo in PATH, default the current directory")
+    p.add_argument("--config", metavar="FILE",
+                   help=f"read settings from FILE instead of ./{CONFIG_FILE} (owner, project title, Status names, "
+                        "extra sources; command-line flags win)")
     p.add_argument("--status-map", metavar="MAP", type=_status_map_arg,
                    help="name the board's Status options when they differ from Todo / In Progress / Done, e.g. "
                         "\"Todo=Backlog,In Progress=Doing,Done=Shipped\" (common names such as Backlog, Doing and "
                         "Shipped are recognised without it)")
+    p.add_argument("--code-comments", action="store_true",
+                   help="with --import/--update/--diff/--archive/--sync: also track TODO:/FIXME: code comments as Todo items")
+    p.add_argument("--releases", action="store_true",
+                   help="with --import/--update/--diff/--archive/--sync: also track git tags as Done items")
     p.add_argument("--json", action="store_true",
                    help="print the result as JSON on stdout (status messages are suppressed; warnings stay on stderr)")
     p.add_argument("--list", choices=sorted({*LIST_KINDS, *LINKED_LISTS}), metavar="KIND",
@@ -1466,6 +1845,11 @@ def build_parser():
     p.add_argument("--move", nargs=2, metavar=("ITEM", "STATUS"),
                    help="move one board item to STATUS (Todo, In Progress, Done, or another Status option; "
                         "case-insensitive): ITEM is an item id or text matching exactly one title")
+    p.add_argument("--rollup", nargs="*", metavar="DIR",
+                   help="status counts across projects: those of the repos in DIR... (or `repos` in .kopi.toml), "
+                        "else every open project under the owner")
+    p.add_argument("--report", nargs="?", const="text", choices=("text", "markdown"), metavar="FORMAT",
+                   help="print a progress summary of the project (text, or markdown); with --json, the data")
     p.add_argument("--close", metavar="ISSUE",
                    help="close one issue in the current repo: ISSUE is a number, an issue URL, or text matching "
                         "exactly one open issue's title")
@@ -1534,17 +1918,19 @@ def main(argv=None):
     if args.import_issues:
         args.do_import = "."
     modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done, args.list, args.export,
-             args.sync, args.start, args.move, args.close]
+             args.sync, args.start, args.move, args.close, args.report,
+             args.rollup is not None]
     if not (any(modes) or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close)")
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close / --report / --rollup)")
     if sum(map(bool, modes)) > 1:
-        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move and --close are mutually exclusive")
+        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move, --close, --report and --rollup are mutually exclusive")
     if args.check and not args.diff:
         parser.error("--check only applies to --diff")
     if args.all and not args.restore:
         parser.error("--all only applies to --restore")
     if args.local and not args.list:
         parser.error("--local only applies to --list")
+    args.cli_owner, args.cli_status_map = args.owner, args.status_map  # as typed, before .kopi.toml fills them in
     try:
         # only these modes take a directory/file; --done's, --list's and --export's values are not paths
         path = next((m for m in [*modes[:8], args.sync] if m), None)
@@ -1563,10 +1949,14 @@ def main(argv=None):
             elif not os.path.isdir(path):
                 raise GhError(f"not a directory: {path}")
             os.chdir(path)
+        apply_config(args, load_config(args.config or CONFIG_FILE, required=bool(args.config)))
         if args.local:  # --list KIND --local reads TODO.md only: no GitHub needed
             cmd_list_kind(args)
             return 0
         check_auth()
+        if not args.owner and args.config_data.get("owner"):
+            args.owner = args.config_data["owner"]
+            print(f"Using owner: {args.owner} (from {args.config or CONFIG_FILE})", file=sys.stderr)
         if not args.owner:
             args.owner = git_owner()
             if args.owner:
@@ -1577,7 +1967,7 @@ def main(argv=None):
                                           (args.diff, cmd_diff), (args.archive, cmd_archive),
                                           (args.dedupe, cmd_dedupe), (args.squash, cmd_squash), (args.restore, cmd_restore), (args.done, cmd_done), (args.list, cmd_list_kind), (args.export, cmd_export),
                                           (args.init, cmd_init), (args.sync, cmd_sync), (args.start, cmd_start),
-                                          (args.move, cmd_move), (args.close, cmd_close)) if on), getattr(args, "fn", None))
+                                          (args.move, cmd_move), (args.close, cmd_close), (args.report, cmd_report), (args.rollup is not None, cmd_rollup)) if on), getattr(args, "fn", None))
         rc = handler(args)
         return rc if isinstance(rc, int) else 0
     except GhError as e:

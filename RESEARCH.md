@@ -4,7 +4,7 @@ Notes on ideas we have considered but not built. Each section says what the idea
 
 ## Importing more sources
 
-`--import` and `--update` currently read `CHANGELOG.md`, `TODO.md` and the repo's issues and PRs. Two further sources have been considered. Both would be opt-in, so existing behaviour does not change and boards do not fill with noise.
+`--import` and `--update` currently read `CHANGELOG.md`, `TODO.md` and the repo's issues and PRs. Two further sources were considered and built. Both are opt-in, so existing behaviour does not change and boards do not fill with noise.
 
 ### TODO/FIXME code comments
 
@@ -30,4 +30,4 @@ Notes on ideas we have considered but not built. Each section says what the idea
 - Release notes may differ from the changelog wording, so the existing fuzzy matching would not reliably tell them apart.
 - It only becomes useful once this project tags a release. Cutting the first release is a separate TODO item.
 
-**Status:** parked. Neither has been started. The related [TODO.md](TODO.md) item is "Consider opt-in import of TODO/FIXME code comments and GitHub releases/tags".
+**Status:** built in 0.6.4 as `--code-comments` and `--releases` (see the README). The answers to the open questions: files come from `git ls-files` (so ignored and vendored files are skipped) minus docs and data globs, with `[comments]` in `.kopi.toml` to tune; the text is the key; removed comments become `--archive` orphans, which are protected while the source is off; releases are read from git tags and skip versions already in the changelog.

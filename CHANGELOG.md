@@ -7,6 +7,34 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-10-10
+
+### Added
+- `--rollup [DIR ...]` (with `--json`): a read-only status roll-up across several projects, one row each (owner, number, title, Todo, In Progress, Done, percent done, changelog history) plus a total. With directories (or `repos = [...]` in `.kopi.toml`) it finds each repo's project from that directory's git origin, using that repo's own `.kopi.toml` for its owner, project title and Status names unless `--owner` / `--status-map` override. Without either it covers every open project under the owner. Repos without a project are skipped with a warning (`skipped` in `--json`). Documented in `README.md`.
+
+## [0.6.5] - 2026-10-10
+
+### Added
+- `--report [text|markdown]` (with `--json`): a read-only progress summary of the project: percent done and counts by status (changelog entries are counted separately as history, not work), drafts / issues / pull requests, the In Progress and Todo items, the latest releases from `CHANGELOG.md` with their dates and entry counts, and how many differences `--diff` would show. Documented in `README.md`.
+
+### Changed
+- `--diff` and `--report` share one `diff_summary` helper. `--diff` output is unchanged.
+
+## [0.6.4] - 2026-10-10
+
+### Added
+- `--code-comments` (with `--import`, `--update`, `--diff`, `--archive`, `--sync`): track `TODO:` / `FIXME:` code comments as Todo items titled `[code] text`, with the file and line in the body. Only real comments count (a comment marker, the tag, then a colon); the files git tracks are scanned, minus docs and data files. The comment text is the item's identity, so moving a comment does not re-add it, and a removed comment leaves an orphan for `--archive`.
+- `--releases` (same commands): track git tags as Done items titled `[release] tag`, skipping any tag whose version already has a `CHANGELOG.md` entry.
+- `[sources]` (`code_comments`, `releases`) and `[comments]` (`tags`, `include`, `exclude`) settings in `.kopi.toml` to turn the sources on and tune the scan. Documented in `README.md`.
+
+### Changed
+- Board items titled `[code] ...` or `[release] ...` are not treated as orphans while their source is switched off, so `--archive` cannot sweep them away.
+
+## [0.6.3] - 2026-10-10
+
+### Added
+- Per-repo settings in `.kopi.toml` (or `--config FILE`): `owner`, `project` (the board's title, if it is not the repo name) and a `[status]` table naming the board's Status options. Command-line flags win over the file, a missing default file is fine, and a missing `--config` file is an error. Uses `tomllib` where available (Python 3.11+) and a small built-in parser for the same subset on older Pythons, so there are still no dependencies. Documented in `README.md`.
+
 ## [0.6.2] - 2026-10-10
 
 ### Added

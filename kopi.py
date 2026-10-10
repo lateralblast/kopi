@@ -18,7 +18,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 
 class GhError(RuntimeError):
@@ -1030,6 +1030,48 @@ def cmd_move(args):
     _move_item(args, args.move[0], args.move[1], "--move")
 
 
+def cmd_close(args):
+    """--close ISSUE: close one issue in the current repo on GitHub.
+
+    ISSUE is a number (`12` or `#12`), an issue URL, or text matching exactly one open issue's title
+    (case-insensitive; an exact title wins over partial matches). An issue that is already closed is left
+    alone. Only the issue changes: the board catches up on the next --update, which moves a closed issue's
+    item to Done.
+    """
+    repo = git_repo()
+    if not repo:
+        raise GhError("--close must be run inside a git repo with a github.com origin remote")
+    slug = "/".join(repo)
+    rows = json.loads(run("issue", "list", "--repo", slug, "--state", "all", "--limit", str(LINKED_LIMIT),
+                          "--json", "number,title,state,url") or "[]")
+    _warn_if_full(f"the issue list for {slug}", len(rows), LINKED_LIMIT)
+    text = args.close.strip()
+    if m := re.fullmatch(r"#?(\d+)", text):
+        hits = [r for r in rows if r["number"] == int(m.group(1))]
+    elif text.startswith(("http://", "https://")):
+        hits = [r for r in rows if r["url"].rstrip("/") == text.rstrip("/")]
+    else:
+        hits = [r for r in rows if r["state"] == "OPEN" and text.lower() in r["title"].lower()]
+        hits = [r for r in hits if r["title"].lower() == text.lower()] if len(hits) > 1 and \
+            sum(r["title"].lower() == text.lower() for r in hits) == 1 else hits
+    if len(hits) != 1:
+        lines = "".join(f"\n  #{r['number']}\t{r['title']}" for r in hits[:10])
+        raise GhError(f"--close {args.close!r} matched {len(hits)} issues in {slug}"
+                      + (", expected exactly one; use the number for one of:" + lines if hits else ""))
+    issue = hits[0]
+    report = {"repo": slug, "dry_run": bool(args.dry_run), "closed": []}
+    if issue["state"] != "OPEN":
+        say(args, f"Already closed: #{issue['number']} {issue['title']}")
+    elif args.dry_run:
+        report["closed"].append({"number": issue["number"], "title": issue["title"], "url": issue["url"]})
+        say(args, f"close\t#{issue['number']}\t{issue['title']}")
+    else:
+        run("issue", "close", str(issue["number"]), "--repo", slug)
+        report["closed"].append({"number": issue["number"], "title": issue["title"], "url": issue["url"]})
+        say(args, f"Closed #{issue['number']}: {issue['title']}")
+    emit(args, report)
+
+
 def cmd_sync(args):
     """--sync: bring the board and the files level in both directions: --update (files and GitHub -> board), then
     --squash (board -> TODO.md ticks). The --export modes stay separate because they write new files/entries.
@@ -1424,6 +1466,9 @@ def build_parser():
     p.add_argument("--move", nargs=2, metavar=("ITEM", "STATUS"),
                    help="move one board item to STATUS (Todo, In Progress, Done, or another Status option; "
                         "case-insensitive): ITEM is an item id or text matching exactly one title")
+    p.add_argument("--close", metavar="ISSUE",
+                   help="close one issue in the current repo: ISSUE is a number, an issue URL, or text matching "
+                        "exactly one open issue's title")
     p.add_argument("--check", action="store_true",
                    help="with --diff: exit with status 2 if the board and files differ (for CI / pre-commit)")
     p.add_argument("--restore", nargs="?", const=".", metavar="PATH",
@@ -1436,7 +1481,7 @@ def build_parser():
                    help="with --restore: restore every archived item GitHub reports, not just those kopi archived")
     p.add_argument("--match", metavar="TEXT",
                    help="with --archive: archive the one item whose title contains TEXT (case-insensitive; error if not exactly one)")
-    p.add_argument("--dry-run", action="store_true", help="with --import/--update/--sync/--archive/--dedupe/--squash/--restore/--done/--start/--move: print what would change")
+    p.add_argument("--dry-run", action="store_true", help="with --import/--update/--sync/--archive/--dedupe/--squash/--restore/--done/--start/--move/--close: print what would change")
     p.add_argument("--force", action="store_true",
                    help="with --import: import even if the project has items; with --archive: also archive items that look reworded; "
                         "with --export issues/prs: overwrite an ISSUES.md/PRS.md kopi did not generate")
@@ -1489,11 +1534,11 @@ def main(argv=None):
     if args.import_issues:
         args.do_import = "."
     modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done, args.list, args.export,
-             args.sync, args.start, args.move]
+             args.sync, args.start, args.move, args.close]
     if not (any(modes) or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move)")
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close)")
     if sum(map(bool, modes)) > 1:
-        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start and --move are mutually exclusive")
+        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move and --close are mutually exclusive")
     if args.check and not args.diff:
         parser.error("--check only applies to --diff")
     if args.all and not args.restore:
@@ -1532,7 +1577,7 @@ def main(argv=None):
                                           (args.diff, cmd_diff), (args.archive, cmd_archive),
                                           (args.dedupe, cmd_dedupe), (args.squash, cmd_squash), (args.restore, cmd_restore), (args.done, cmd_done), (args.list, cmd_list_kind), (args.export, cmd_export),
                                           (args.init, cmd_init), (args.sync, cmd_sync), (args.start, cmd_start),
-                                          (args.move, cmd_move)) if on), getattr(args, "fn", None))
+                                          (args.move, cmd_move), (args.close, cmd_close)) if on), getattr(args, "fn", None))
         rc = handler(args)
         return rc if isinstance(rc, int) else 0
     except GhError as e:

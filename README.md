@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.6.1
+Version: 0.6.2
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -33,6 +33,7 @@ Version: 0.6.1
 ./kopi.py --done ITEM [--dry-run]                         # move one board item to Done (ITEM: id or title text)
 ./kopi.py --start ITEM [--dry-run]                        # move one board item to In Progress
 ./kopi.py --move ITEM STATUS [--dry-run]                  # move one board item to any Status (Todo, In Progress, Done, ...)
+./kopi.py --close ISSUE [--dry-run]                       # close a GitHub issue (ISSUE: number, URL or title text)
 ./kopi.py --restore [PATH] [--dry-run] [--id ID | --all]  # unarchive items that --archive archived (or all archived)
 ./kopi.py --squash [PATH] [--dry-run]                     # tick TODO.md entries that are Done on the board
 ./kopi.py --dedupe [PATH] [--dry-run]                     # delete duplicate board items
@@ -53,7 +54,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `create`: `{number, url, linked_repo}`; `--init`: `{number, created}`; `delete`: `{deleted}`; `add`: `{added}`.
 - `--import` and `--update`: `{project, dry_run, added: [{status, title, url?}], moved: [{title, from, to}]}` (`--import` reports `items`, `skipped` on a dry run and `imported` otherwise).
 - `--diff`: `{project, files_only, github_only, board_only, duplicates, behind, ahead, in_sync}`.
-- `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--sync`: `{project, dry_run, update, squash}` (the `--update` and `--squash` results); `--squash`: `{project, dry_run, ticked: [{title, from}]}`; `set`: `{project, dry_run, item, field, value}`; `--list`: an array of items, as above; `--dedupe`: `{project, dry_run, deleted}`.
+- `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--close`: `{repo, dry_run, closed: [{number, title, url}]}`; `--sync`: `{project, dry_run, update, squash}` (the `--update` and `--squash` results); `--squash`: `{project, dry_run, ticked: [{title, from}]}`; `set`: `{project, dry_run, item, field, value}`; `--list`: an array of items, as above; `--dedupe`: `{project, dry_run, deleted}`.
 
 ## Boards with other Status names (`--status-map`)
 
@@ -221,6 +222,14 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 - Unlike `--update`, which only moves items forward, these may move an item **backwards**, for example `kopi --move "dark mode" Todo` to reopen a Done item.
 - An item already in the target status is reported and left alone. A `STATUS` the board does not have fails with an error naming it.
 - `kopi --done ITEM` is the same as `kopi --move ITEM Done`.
+
+## Closing an issue (`--close`)
+
+`kopi --close ISSUE` closes one issue in the current repo (found from the git `origin`) on GitHub. `ISSUE` is an issue number (`12` or `#12`), an issue URL, or text that matches exactly one **open** issue's title, ignoring case: `kopi --close "dark mode"`. If several open issues match, an exact title match wins; otherwise it fails and lists the candidates with their numbers. Use `--dry-run` to see what would be closed.
+
+- An issue that is already closed is reported and left alone. Closed issues are not matched by title text, only by number or URL.
+- Only the issue changes. The project board catches up on the next `--update`, which moves a closed issue's item to Done; or move it now with `--done`.
+- Run it from the repo's directory; it takes no path argument because its value is the issue.
 
 ## Restoring archived items (`--restore`)
 

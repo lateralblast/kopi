@@ -8,6 +8,7 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] `--close ISSUE` closes a GitHub issue, with tests.
 - [x] Raise the fixed lookup caps and warn when one is hit; `--import issues` labels; `--list issues|prs`; `--status-map` and recognised custom Status names, with tests.
 - [x] `--diff --check` exit status, `--sync`, `--start ITEM` and `--move ITEM STATUS`, with tests.
 - [x] Describe kopi as "Keep Our Projects In-sync" in the help text, docstring, `pyproject.toml`, `README.md` and `CLAUDE.md`.

@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-10
+
+### Added
+- `--close ISSUE` (with `--dry-run`, `--json`): close one issue in the current repo on GitHub. `ISSUE` is a number (`12` or `#12`), an issue URL, or text matching exactly one open issue's title (an exact title wins over partial matches). An already-closed issue is reported and left alone. The board catches up on the next `--update`. Documented in `README.md`.
+
 ## [0.6.1] - 2026-10-10
 
 ### Added

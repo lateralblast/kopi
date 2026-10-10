@@ -1444,3 +1444,47 @@ def test_list_issues_and_prs_from_board_and_files(tmp_path, monkeypatch, capsys)
     _run_update([], argv=("--list", "issues", "--local"), issues_md=ISSUES_TEXT)  # no GitHub lookup needed
     out = capsys.readouterr().out
     assert "Brand new\n" in out and "Existing one\thttps://github.com/me/r/issues/1" in out
+
+
+CLOSE_ISSUES = json.dumps([
+    {"number": 1, "title": "Login fails", "state": "OPEN", "url": "https://github.com/me/r/issues/1"},
+    {"number": 2, "title": "Login fails on mobile", "state": "OPEN", "url": "https://github.com/me/r/issues/2"},
+    {"number": 3, "title": "Old bug", "state": "CLOSED", "url": "https://github.com/me/r/issues/3"},
+    {"number": 4, "title": "Add dark mode", "state": "OPEN", "url": "https://github.com/me/r/issues/4"}])
+
+
+def _close(*argv):
+    calls = []
+
+    def fake(*a):
+        calls.append(a)
+        return CLOSE_ISSUES if a[:2] == ("issue", "list") else ""
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_repo", return_value=("me", "r")), \
+         mock.patch("kopi.run", side_effect=fake):
+        rc = cli.main(list(argv))
+    return rc, [c for c in calls if c[:2] == ("issue", "close")]
+
+
+def test_close_by_number_url_and_text(capsys):
+    for target, number in (("4", "4"), ("#1", "1"), ("https://github.com/me/r/issues/2", "2"), ("dark", "4")):
+        rc, closes = _close("--close", target)
+        assert rc == 0 and closes == [("issue", "close", number, "--repo", "me/r")], target
+    assert "Closed #4: Add dark mode" in capsys.readouterr().out
+    rc, closes = _close("--close", "login fails")  # two partial matches, but one is exact
+    assert rc == 0 and closes == [("issue", "close", "1", "--repo", "me/r")]
+
+
+def test_close_already_closed_dry_run_json_and_errors(capsys):
+    rc, closes = _close("--close", "3")
+    assert rc == 0 and closes == [] and "Already closed: #3 Old bug" in capsys.readouterr().out
+    rc, closes = _close("--json", "--close", "4", "--dry-run")
+    data = json.loads(capsys.readouterr().out)
+    assert closes == [] and data["dry_run"] is True and data["closed"][0]["number"] == 4
+    assert _close("--close", "login")[0] == 1      # two open matches, none exact
+    assert _close("--close", "nothing like it")[0] == 1
+    assert _close("--close", "99")[0] == 1         # no such number
+    assert _close("--close", "old bug")[0] == 1    # closed issues are not matched by text
+    err = capsys.readouterr().err
+    assert "matched 2 issues" in err and "#2\tLogin fails on mobile" in err and "matched 0 issues" in err
+    with pytest.raises(SystemExit):
+        cli.main(["--close", "1", "--update"])

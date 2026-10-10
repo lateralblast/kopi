@@ -435,6 +435,29 @@ Where each date comes from:
 - Writes go in batches (20 per request). `--dry-run` on `--setup-dates` and `--backfill-dates` lists what would happen; `--import` and `--update` in dry-run mode neither create fields nor mention dates.
 - **Opting out.** `--no-dates` skips the dates for one `--import` / `--update`; `enabled = false` under `[dates]` in `.kopi.toml` turns them off for the repo, including the stamping by `--start`, `--done` and `--move`. `--setup-dates` and `--backfill-dates` still work when asked for explicitly.
 
+### Seeing and filtering the dates
+
+The view's **Filter** box only narrows which items show; it does not add columns. To see the dates:
+
+- **Table view:** click the **+** at the far right of the header row (or the View menu, then Fields) and tick **Started** and **Completed**.
+- **Roadmap view:** click **Date fields** at the top right and set **Start date** to Started and **Target date** to Completed.
+
+Filters that use them (field names are case-insensitive; use your own names if you changed them under `[dates]`, and quote any name containing a space):
+
+| You want | Filter |
+| --- | --- |
+| Only items that have a Completed date | `has:completed` |
+| Only items that have a Started date | `has:started` |
+| Items with no Completed date (open work) | `no:completed` |
+| Completed on or after a date | `completed:>=2025-01-01` |
+| Completed within a range | `completed:2025-01-01..2025-12-31` |
+| Started up to a date | `started:*..2024-12-31` |
+| Completed today | `completed:@today` |
+| Completed in the last 30 days | `completed:>=@today-30d` |
+| Done items that have a date | `status:Done has:completed` (then sort by Completed) |
+
+Dates are written `YYYY-MM-DD` and ranges use `..`. These follow GitHub's [filtering documentation](https://docs.github.com/en/issues/planning-and-tracking-with-projects/customizing-views-in-your-project/filtering-projects); the relative forms (`@today` with `d` or `w` offsets) are worth confirming with the Filter box's autocomplete, which lists what your view accepts. GitHub's documentation does not say how a Roadmap treats items that have no dates, so expect undated items (open work, for example) to be missing or shown separately there.
+
 ## Reports
 
 ### Progress report (`--report`)

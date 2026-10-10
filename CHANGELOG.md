@@ -7,6 +7,17 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-10-11
+
+### Changed
+- Split the 165-test `tests/test_cli.py` into one file per feature area (`test_core.py`, `test_import_update.py`, `test_diff_sync.py`, `test_archive_restore.py`, `test_export.py`, `test_items.py`, `test_issues.py`, `test_config_sources.py`, `test_reports.py`), with the shared boards and mock runners in `tests/helpers.py` and the autouse fixtures in `tests/conftest.py`. No test was added or removed by the split.
+- Tightened weak test assertions: the mode-exclusivity tests now check the error message and that nothing reached GitHub, `check_auth` is asserted to return quietly, the forced-import test counts the created items, and a helper that was defined after its use was replaced with `types.SimpleNamespace`.
+
+## [0.7.4] - 2026-10-11
+
+### Added
+- `--annotate` with `--promote` and `--promote-all`: after promoting, add the new issue number to the matching `TODO.md` entry, for example `- [ ] Add dark mode` becomes `- [ ] Add dark mode (#12)`. The entry is the one with the same text (or starting with a title that was cut to 100 characters), else the best match at 75%+ shared words and similar length (a short title cannot claim a long entry that merely contains its words). An entry that already ends in an issue reference is left alone, so re-running is safe, and a similar longer entry is never annotated in its place. `--dry-run` shows the planned annotations (as `(#N)`) without writing, and `--json` reports `annotated`. Documented in `README.md`.
+
 ## [0.7.3] - 2026-10-11
 
 ### Added

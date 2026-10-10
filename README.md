@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.7.3
+Version: 0.7.5
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -67,8 +67,8 @@ cd ~/code/my-repo
 ./kopi.py --open|--reopen|--close ... --local                # only edit the local ISSUES.md, nothing on GitHub
 ./kopi.py --close ISSUE [--dry-run]                          # close a GitHub issue (ISSUE: number, URL or title text)
 ./kopi.py --reopen ISSUE [--dry-run]                         # reopen a closed issue and put it back on the project as Todo
-./kopi.py --promote ITEM [--dry-run]                         # turn one draft board item into a real issue
-./kopi.py --promote-all [todo|inprogress] [--dry-run|--yes]  # ...or every open draft (needs --yes)
+./kopi.py --promote ITEM [--dry-run] [--annotate]            # turn one draft board item into a real issue (--annotate: add (#N) to TODO.md)
+./kopi.py --promote-all [todo|inprogress] [--dry-run|--yes] [--annotate]  # ...or every open draft (needs --yes)
 ./kopi.py --archive [PATH] [--dry-run] [--force]             # archive open board drafts no longer in TODO.md
 ./kopi.py --archive [PATH] [--id ID | --match TEXT]          # archive one item
 ./kopi.py --restore [PATH] [--dry-run] [--id ID | --all]     # unarchive items that --archive archived (or all archived)
@@ -154,7 +154,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--export todo|inprogress|done`: `{project, dry_run, file, added, already_present}`; `--export issues` / `prs`: `{project, dry_run, file, changed, issues|prs}`; `--import issues`: `{repo, dry_run, created: [{title, url?, closed, labels}], existing, unknown_labels}`.
 - `--squash`: `{project, dry_run, ticked: [{title, from}], issues: {file, changed, skipped, count} | null}`.
 - `--list`: an array of items, as under [`--list`](#listing-items---list).
-- `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--open`: `{project, repo, dry_run, created: {title, url, number, item_id} | null}` (with `--local`: `{file, dry_run, created: {title, labels}}`); `--close`: `{repo, dry_run, closed: [{number, title, url}]}` (with `--local`: `{file, dry_run, closed: [{title, number?, url?}]}`); `--reopen`: `{repo, dry_run, reopened: [{number, title, url}], board: {project?, action}}` (`action` is `moved`, `added`, `unchanged` or `skipped`); `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}]}`; `--promote-all`: the same plus `failed: [{title, id, error}]`.
+- `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--open`: `{project, repo, dry_run, created: {title, url, number, item_id} | null}` (with `--local`: `{file, dry_run, created: {title, labels}}`); `--close`: `{repo, dry_run, closed: [{number, title, url}]}` (with `--local`: `{file, dry_run, closed: [{title, number?, url?}]}`); `--reopen`: `{repo, dry_run, reopened: [{number, title, url}], board: {project?, action}}` (`action` is `moved`, `added`, `unchanged` or `skipped`); `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}], annotated?}`; `--promote-all`: the same plus `failed: [{title, id, error}]`; `annotated` (with `--annotate`) is `[{title, number, entry}]`.
 - `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--dedupe`: `{project, dry_run, deleted}`.
 - `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
 
@@ -314,7 +314,8 @@ With `--json`, both forms print an array: `{id, status, title, url?}` for the pr
 
 - The draft is converted **in place** (GitHub's `convertProjectV2DraftIssueItemToIssue`), so it stays on the board with its status and fields and becomes a linked issue item with the same title. The next `--update` then treats it like any other issue: it moves to Done when the issue is closed, and a `TODO.md` entry with the same title is left to the issue rather than re-added.
 - Only drafts can be promoted. An item that is already an issue or pull request is an error naming it.
-- This creates a real issue, visible to everyone who can see the repo, so it is never done automatically. `TODO.md` is not changed.
+- This creates a real issue, visible to everyone who can see the repo, so it is never done automatically. `TODO.md` is not changed unless you pass `--annotate` (below).
+- **`--annotate`** also adds the new issue number to the matching `TODO.md` entry, so `- [ ] Add dark mode` becomes `- [ ] Add dark mode (#12)` and the link is visible in the file. The entry is the one with the same text, else the best match at 75%+ shared words and a similar length, so a short title cannot claim a long entry that merely contains its words. An entry that already ends in an issue reference is left alone, so re-running is safe. Matching, `--update` and `--squash` keep working as before: the entry is still recognised as belonging to the issue. `--dry-run` shows the planned change as `(#N)` and writes nothing.
 
 `kopi --promote-all` does the same for every open draft at once, or just the `todo` or `inprogress` ones (`kopi --promote-all todo`):
 

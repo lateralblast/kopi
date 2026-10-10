@@ -4,10 +4,12 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Open
 
-- [ ] Optionally annotate the `TODO.md` entry with the new issue number (`(#12)`) after `--promote`.
+- [ ] Verify `--open`, `--reopen`, `--close` and `--promote-all --yes` live on a throwaway issue (they are only tested with mocks so far).
 
 ## Done
 
+- [x] Split `tests/test_cli.py` into one file per feature (shared helpers in `tests/helpers.py`) and tighten the weak assertions.
+- [x] `--annotate` adds the new issue number to the `TODO.md` entry after `--promote` / `--promote-all`, with tests.
 - [x] `--local` for `--open`, `--reopen` and `--close` (ISSUES.md only), with tests; exports keep unlinked local entries.
 - [x] `--reopen ISSUE` reopens a closed issue and puts it back on the project as Todo, with tests.
 - [x] `--open TITLE` creates an issue and adds it to the project as Todo, with tests.

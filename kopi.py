@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.7.3"
+__version__ = "0.7.5"
 
 
 class GhError(RuntimeError):
@@ -398,6 +398,12 @@ def overlap(a, b):
     if not wa or not wb:
         return 0.0
     return len(wa & wb) / min(len(wa), len(wb))
+
+
+def similar_length(a, b, ratio=0.6):
+    """True if the shorter text has at least `ratio` as many distinct words as the longer one."""
+    wa, wb = _words(a), _words(b)
+    return bool(wa and wb) and min(len(wa), len(wb)) / max(len(wa), len(wb)) >= ratio
 
 
 def similar(a, b, threshold=0.4):
@@ -1725,7 +1731,54 @@ def cmd_promote(args):
         issue = _convert_draft(repo, _repo_node_id(repo), item)
         report["promoted"].append({**entry, "number": issue["number"], "url": issue["url"]})
         say(args, f"Promoted to {slug}#{issue['number']}: {issue['url']}")
+    _annotate(args, report)
     emit(args, report)
+
+
+def _annotate(args, report):
+    """--annotate: add (#N) to the TODO.md entries of the items in report["promoted"]; adds report["annotated"]."""
+    if not args.annotate:
+        return
+    report["annotated"] = annotate_todo([{"title": p["title"], "number": p.get("number")} for p in report["promoted"]],
+                                        dry_run=args.dry_run)
+    for a in report["annotated"]:
+        say(args, f"{'annotate' if args.dry_run else 'Annotated'}\tTODO.md: {a['entry']}")
+
+
+def annotate_todo(promoted, dry_run=False):
+    """Append ` (#N)` to the TODO.md entry of each promoted item: [{title, number}] -> [{title, number, entry}] annotated.
+
+    The entry is the checkbox line whose text equals the item's title (or starts with it, for a title cut to 100
+    characters), else the best match at 75%+ shared words and similar length. An entry already ending in an
+    issue reference is left alone. `number` None (a dry run) shows `#N`. Missing TODO.md: nothing to do."""
+    text = _read("TODO.md")
+    lines = text.splitlines()
+    done = []
+    ref = re.compile(r"\s*\(#(\d+|N)\)$")
+    for item in promoted:
+        title, best, exact = item["title"], (0.0, None), False
+        for idx, line in enumerate(lines):
+            m = re.match(r"^- \[[ ~xX]\] (.+?)\s*$", line)
+            if not m:
+                continue
+            entry, annotated = ref.sub("", m.group(1)), bool(ref.search(m.group(1)))
+            is_exact = entry == title or (title.endswith("…") and entry.startswith(title[:-1]))
+            if is_exact and annotated:
+                exact, best = True, (0.0, None)  # already done: do not fall back to a similar, longer entry
+                break
+            # exact text wins outright; otherwise a similar entry must also be of similar length, so a short title
+            # cannot claim a long entry that merely contains its words
+            score = 2.0 if is_exact else (overlap(entry, title) if similar_length(entry, title) else 0.0)
+            if not annotated and score >= 0.75 and score > best[0]:
+                best = (score, idx)
+        if best[1] is not None and not exact:
+            suffix = f" (#{item['number'] or 'N'})"
+            lines[best[1]] += suffix
+            done.append({"title": title, "number": item["number"], "entry": lines[best[1]][6:]})
+    if done and not dry_run:
+        with open("TODO.md", "w") as f:
+            f.write("\n".join(lines) + ("\n" if text.endswith("\n") else ""))
+    return done
 
 
 def _repo_node_id(repo):
@@ -1778,6 +1831,7 @@ def cmd_promote_all(args):
             say(args, f"promote\t{i['status']}\t{i['title']}\t-> new issue in {slug}")
         if args.dry_run:
             say(args, f"Dry run: {len(targets)} drafts would become issues in {slug}")
+            _annotate(args, report)
             emit(args, report)
             return 0
         raise GhError(f"this would create {len(targets)} issues in {slug}; re-run with --yes to do it, or --dry-run to preview")
@@ -1795,6 +1849,7 @@ def cmd_promote_all(args):
         say(args, f"Promoted to {slug}#{issue['number']}: {item['title']}")
     say(args, f"Promoted {len(report['promoted'])} drafts to issues in {slug}"
         + (f" ({len(report['failed'])} failed)" if report["failed"] else ""))
+    _annotate(args, report)
     emit(args, report)
     return 1 if report["failed"] else 0
 
@@ -2225,6 +2280,8 @@ def build_parser():
                    help="turn every open draft board item (or just the todo / inprogress ones) into a real issue in "
                         "the current repo; needs --yes unless --dry-run")
     p.add_argument("--yes", action="store_true", help="with --promote-all: really create the issues")
+    p.add_argument("--annotate", action="store_true",
+                   help="with --promote / --promote-all: add the new issue number, e.g. (#12), to the matching TODO.md entry")
     p.add_argument("--open", metavar="TITLE",
                    help="create a new issue titled TITLE in the current repo and add it to the project as Todo "
                         "(with --body / --label; --force to allow a duplicate open title)")
@@ -2310,6 +2367,8 @@ def main(argv=None):
         parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move, --close, --report, --rollup, --promote, --promote-all, --open and --reopen are mutually exclusive")
     if (args.body is not None or args.label) and not args.open:
         parser.error("--body and --label only apply to --open")
+    if args.annotate and not (args.promote or args.promote_all):
+        parser.error("--annotate only applies to --promote and --promote-all")
     if args.yes and not args.promote_all:
         parser.error("--yes only applies to --promote-all")
     if args.check and not args.diff:

@@ -9,30 +9,30 @@ Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI
 ## Usage
 
 ```
-./kopi.py list [--closed]                 # number, title, open/closed, linked repo, URL
+./kopi.py list [--closed]                                 # number, title, open/closed, linked repo, URL
 ./kopi.py create "Title" --repo owner/repo
 ./kopi.py view N
 ./kopi.py delete N
 ./kopi.py fields N
 ./kopi.py items N
 ./kopi.py set N ITEM --field NAME (--value V | --clear)   # set a field value on one item
-./kopi.py add N --url <issue-or-pr-url>    # or --title "draft item"
-./kopi.py --init [PATH]                    # ensure the current repo has a project
-./kopi.py --import [PATH|FILE] [--dry-run] [--force]   # seed the project from CHANGELOG.md, TODO.md, issues and PRs
-./kopi.py --import issues [--dry-run]     # create a GitHub issue for each ISSUES.md entry that has none
-./kopi.py --update [PATH|FILE] [--dry-run]            # sync CHANGELOG.md / TODO.md changes into the project
-./kopi.py --diff [PATH]                    # show how the project differs from the files/issues/PRs
-./kopi.py --archive [PATH] [--id ID | --match TEXT]  # archive one item (see below)
-./kopi.py --archive [PATH] [--dry-run] [--force]  # archive open board drafts no longer in TODO.md
-./kopi.py --export todo|inprogress|done [--dry-run]  # add the board's items to TODO.md as [ ] / [~] / [x] entries
-./kopi.py --export issues [--dry-run] [--force]      # write the board's issues to ISSUES.md
-./kopi.py --export prs [--dry-run] [--force]         # write the board's pull requests to PRS.md
-./kopi.py --list todo|inprogress|done [--local]  # list the project's items by status (or the matching entries in TODO.md)
-./kopi.py --done ITEM [--dry-run]               # move one board item to Done (ITEM: id or title text)
+./kopi.py add N --url <issue-or-pr-url>                   # or --title "draft item"
+./kopi.py --init [PATH]                                   # ensure the current repo has a project
+./kopi.py --import [PATH|FILE] [--dry-run] [--force]      # seed the project from CHANGELOG.md, TODO.md, issues and PRs
+./kopi.py --import issues [--dry-run]                     # create a GitHub issue for each ISSUES.md entry that has none
+./kopi.py --update [PATH|FILE] [--dry-run]                # sync CHANGELOG.md / TODO.md changes into the project
+./kopi.py --diff [PATH]                                   # show how the project differs from the files/issues/PRs
+./kopi.py --archive [PATH] [--id ID | --match TEXT]       # archive one item (see below)
+./kopi.py --archive [PATH] [--dry-run] [--force]          # archive open board drafts no longer in TODO.md
+./kopi.py --export todo|inprogress|done [--dry-run]       # add the board's items to TODO.md as [ ] / [~] / [x] entries
+./kopi.py --export issues [--dry-run] [--force]           # write the board's issues to ISSUES.md
+./kopi.py --export prs [--dry-run] [--force]              # write the board's pull requests to PRS.md
+./kopi.py --list todo|inprogress|done [--local]           # list the project's items by status (or the matching entries in TODO.md)
+./kopi.py --done ITEM [--dry-run]                         # move one board item to Done (ITEM: id or title text)
 ./kopi.py --restore [PATH] [--dry-run] [--id ID | --all]  # unarchive items that --archive archived (or all archived)
-./kopi.py --squash [PATH] [--dry-run]             # tick TODO.md entries that are Done on the board
-./kopi.py --dedupe [PATH] [--dry-run]             # delete duplicate board items
-./kopi.py --json <command or mode>        # print the result as JSON (see below)
+./kopi.py --squash [PATH] [--dry-run]                     # tick TODO.md entries that are Done on the board
+./kopi.py --dedupe [PATH] [--dry-run]                     # delete duplicate board items
+./kopi.py --json <command or mode>                        # print the result as JSON (see below)
 ./kopi.py --version
 ```
 

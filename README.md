@@ -1,3 +1,5 @@
+![kopi](kopi.jpg)
+
 # kopi
 
 Version: 0.5.8

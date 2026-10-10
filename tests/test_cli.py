@@ -713,3 +713,47 @@ def test_diff_flags_duplicates_once(capsys):
     data, _ = _json_out(capsys)
     assert [d["title"] for d in data["duplicates"]] == ["[0.0.1] Single-file CLI."]
     assert all(i["title"] != "[0.0.1] Single-file CLI." for i in data["board_only"])
+
+
+def _created_titles(run_json_mock):
+    return [c.args[c.args.index("--title") + 1] for c in run_json_mock.call_args_list if c.args[1] == "item-create"]
+
+
+def test_update_single_file_only_reads_that_file(tmp_path):
+    f = tmp_path / "CHANGELOG.md"
+    f.write_text("x")
+    with mock.patch("kopi.os.chdir") as chdir:
+        rc, rj, run = _run_update([], argv=("--update", str(f)), linked=[("Todo", "An issue", "https://x/1")])
+    titles = _created_titles(rj)
+    assert rc == 0 and chdir.call_args.args == (str(tmp_path),)
+    assert titles and all(t.startswith("[0.0.") for t in titles)  # changelog only: no TODO items
+    assert not any(c.args[1] == "item-add" for c in rj.call_args_list)  # and no issues/PRs
+
+    f = tmp_path / "TODO.md"
+    f.write_text("x")
+    with mock.patch("kopi.os.chdir"):
+        rc, rj, run = _run_update([], argv=("--update", str(f)))
+    titles = _created_titles(rj)
+    assert rc == 0 and titles and not any(t.startswith("[0.0.") for t in titles)
+
+
+def test_import_single_file_dry_run(tmp_path, capsys):
+    f = tmp_path / "TODO.md"
+    f.write_text("x")
+    with mock.patch("kopi.os.chdir"):
+        rc, *_ = _run_import([], argv=("--import", str(f), "--dry-run"), linked=[("Todo", "Bug", "https://x/1")])
+    out = capsys.readouterr().out
+    assert rc == 0 and "Run against real GitHub." in out and "Single-file CLI" not in out and "Bug" not in out
+
+
+def test_file_argument_errors(tmp_path, capsys):
+    other = tmp_path / "README.md"
+    other.write_text("x")
+    f = tmp_path / "TODO.md"
+    f.write_text("x")
+    with mock.patch("kopi.check_auth"):
+        assert cli.main(["--update", str(other)]) == 1       # not a source file
+        assert cli.main(["--diff", str(f)]) == 1             # only --import/--update take a file
+        assert cli.main(["--import", str(tmp_path / "CHANGELOG.md")]) == 1  # missing
+    err = capsys.readouterr().err
+    assert "only CHANGELOG.md or TODO.md" in err and "expected a directory" in err and "no such file" in err

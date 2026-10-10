@@ -16,7 +16,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.3.8"
+__version__ = "0.3.9"
 
 
 class GhError(RuntimeError):
@@ -263,6 +263,18 @@ def _read(path):
         return ""
 
 
+SOURCE_FILES = ("CHANGELOG.md", "TODO.md")
+
+
+def load_sources(args):
+    """(changelog, todo, linked) for --import/--update. With args.only (one file given), only that file is read
+    and issues/PRs are skipped."""
+    only = getattr(args, "only", None)
+    changelog = "" if only == "TODO.md" else _read("CHANGELOG.md")
+    todo = "" if only == "CHANGELOG.md" else _read("TODO.md")
+    return changelog, todo, [] if only else fetch_linked(git_repo())
+
+
 def fetch_linked(repo):
     """[(status, title, url)] for the repo's issues and PRs, mapped to project statuses.
 
@@ -333,8 +345,7 @@ def wait_for_items(args, number, ids):
 
 def cmd_import(args):
     """Seed an empty project from CHANGELOG.md and TODO.md (draft items) plus the repo's issues and PRs."""
-    changelog, todo = _read("CHANGELOG.md"), _read("TODO.md")
-    linked = fetch_linked(git_repo())
+    changelog, todo, linked = load_sources(args)
     if not changelog and not todo and not linked:
         raise GhError("nothing to import: no CHANGELOG.md or TODO.md in the current directory, and no issues or PRs")
     plan, skipped = build_plan(changelog, todo, linked)
@@ -394,8 +405,7 @@ def sync_plan(args):
     moves [(item, from, to, title)] where the board is behind; ahead [(item, board, file, title)] where
     the board is ahead (never acted on); orphans, the board's draft items that match no file entry.
     """
-    changelog, todo = _read("CHANGELOG.md"), _read("TODO.md")
-    linked = fetch_linked(git_repo())
+    changelog, todo, linked = load_sources(args)
     if not changelog and not todo and not linked:
         raise GhError("nothing to compare: no CHANGELOG.md or TODO.md in the current directory, and no issues or PRs")
     plan, skipped = build_plan(changelog, todo)
@@ -673,10 +683,12 @@ def build_parser():
                         "uses the repo in PATH, default the current directory")
     p.add_argument("--import", dest="do_import", nargs="?", const=".", metavar="PATH",
                    help="seed an empty project from CHANGELOG.md, TODO.md and the repo's issues/PRs (creates the project if missing); "
-                        "uses the repo in PATH, default the current directory")
+                        "uses the repo in PATH, default the current directory; "
+                        "give CHANGELOG.md or TODO.md (optionally with a directory, e.g. dir/TODO.md) to import only that file")
     p.add_argument("--update", nargs="?", const=".", metavar="PATH",
                    help="sync CHANGELOG.md, TODO.md and the repo's issues/PRs into the existing project: add missing items, move items forward; "
-                        "uses the repo in PATH, default the current directory")
+                        "uses the repo in PATH, default the current directory; "
+                        "give CHANGELOG.md or TODO.md (optionally with a directory) to update from only that file")
     p.add_argument("--diff", nargs="?", const=".", metavar="PATH",
                    help="show differences between the project's items and CHANGELOG.md, TODO.md and issues/PRs; "
                         "uses the repo in PATH, default the current directory")
@@ -734,8 +746,19 @@ def main(argv=None):
         parser.error("--init, --import, --update, --diff, --archive and --squash are mutually exclusive")
     try:
         path = next((m for m in modes if m), None)
+        args.only = None
         if path:
-            if not os.path.isdir(path):
+            if os.path.isfile(path) or os.path.basename(path) in SOURCE_FILES:
+                # a single source file: only --import/--update take one; work in its directory
+                if not (args.do_import or args.update):
+                    raise GhError(f"expected a directory, not a file: {path}")
+                if os.path.basename(path) not in SOURCE_FILES:
+                    raise GhError(f"only {' or '.join(SOURCE_FILES)} can be given as a file, not {path}")
+                if not os.path.isfile(path):
+                    raise GhError(f"no such file: {path}")
+                args.only = os.path.basename(path)
+                path = os.path.dirname(path) or "."
+            elif not os.path.isdir(path):
                 raise GhError(f"not a directory: {path}")
             os.chdir(path)
         check_auth()

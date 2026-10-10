@@ -1,6 +1,6 @@
 [project]
 name = "kopi"
-version = "0.3.8"
+version = "0.3.9"
 description = "Create and manage GitHub Projects (v2) from the command line"
 requires-python = ">=3.9"
 license = { file = "LICENSE.md" }

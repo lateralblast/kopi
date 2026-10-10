@@ -1,6 +1,6 @@
 # kopi
 
-Version: 0.3.8
+Version: 0.3.9
 
 Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -15,8 +15,8 @@ Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI
 ./kopi.py items N
 ./kopi.py add N --url <issue-or-pr-url>    # or --title "draft item"
 ./kopi.py --init [PATH]                    # ensure the current repo has a project
-./kopi.py --import [PATH] [--dry-run] [--force]   # seed the project from CHANGELOG.md, TODO.md, issues and PRs
-./kopi.py --update [PATH] [--dry-run]            # sync CHANGELOG.md / TODO.md changes into the project
+./kopi.py --import [PATH|FILE] [--dry-run] [--force]   # seed the project from CHANGELOG.md, TODO.md, issues and PRs
+./kopi.py --update [PATH|FILE] [--dry-run]            # sync CHANGELOG.md / TODO.md changes into the project
 ./kopi.py --diff [PATH]                    # show how the project differs from the files/issues/PRs
 ./kopi.py --archive [PATH] [--dry-run] [--force]  # archive open board drafts no longer in TODO.md
 ./kopi.py --squash [PATH] [--dry-run]             # delete duplicate board items
@@ -91,6 +91,14 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 ## Running against another repo
 
 `--init`, `--import`, `--update`, `--diff`, `--archive` and `--squash` work on the current directory by default. Give them a path to work on the repo there instead, for example `kopi --update ~/code/other-repo`. The path's `CHANGELOG.md`, `TODO.md` and git `origin` are used, so the project and owner are resolved from that repo. It must be a directory. Put the path right after the flag, before other options (`kopi --update PATH --dry-run`).
+
+## Importing or updating a single file
+
+By default `--import` and `--update` process both `CHANGELOG.md` and `TODO.md`, plus the repo's issues and PRs. Give one of those file names instead of a directory to process only that file: `kopi --import CHANGELOG.md`, `kopi --update TODO.md`. The file may carry a directory (`kopi --update ~/code/other-repo/TODO.md`), which is then used as the repo.
+
+- Issues and PRs are skipped when a single file is given.
+- Only `CHANGELOG.md` and `TODO.md` are accepted, and the file must exist. `--init`, `--diff`, `--archive` and `--squash` take directories only.
+- Matching works as usual but sees only that file. For example, `--import TODO.md` cannot dedupe `[x]` items against the changelog, so completed TODO items are imported as Done; and `--update CHANGELOG.md` will not move items based on `TODO.md`.
 
 ## Choosing the owner
 

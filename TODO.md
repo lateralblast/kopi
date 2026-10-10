@@ -8,10 +8,11 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 - [ ] Verify the `--init` create-and-link path against real GitHub (only the existing-project path was run live).
 - [~] Run `kopi` against real GitHub: `list`, `view`, `create`, `--repo` link and `delete` verified; still to try `fields`, `items`, `add`.
 - [ ] Set item field values (status, etc.) via the `graphql()` helper.
-- [ ] Cut the first release: tag the version in git (changelog and files are at `0.3.8`).
+- [ ] Cut the first release: tag the version in git (changelog and files are at `0.3.9`).
 
 ## Done
 
+- [x] `--import` / `--update` can process a single file (`CHANGELOG.md` or `TODO.md`), with tests.
 - [x] `--diff` flags duplicate board items explicitly, with a test.
 - [x] Added the `CHANGELOG.md` heading to the version-consistency test.
 - [x] `--json` output flag for every command and mode, with tests.

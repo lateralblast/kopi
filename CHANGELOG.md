@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-10-10
+
+### Added
+- `--import` and `--update` accept `CHANGELOG.md` or `TODO.md` (optionally with a directory) to process only that file; issues and PRs are skipped in that mode. Without it they process both files as before. Documented in `README.md`.
+
 ## [0.3.8] - 2026-10-10
 
 ### Changed

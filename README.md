@@ -1,6 +1,6 @@
 # kopi
 
-Version: 0.4.1
+Version: 0.4.2
 
 Create and manage GitHub Projects (v2) from the command line. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 

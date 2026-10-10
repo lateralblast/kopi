@@ -6,10 +6,10 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 - [ ] Consider opt-in import of TODO/FIXME code comments and GitHub releases/tags (notes in [RESEARCH.md](RESEARCH.md)).
 - [ ] Set item field values (status, etc.) via the `graphql()` helper.
-- [ ] Cut the first release: tag the version in git (changelog and files are at `0.4.1`).
 
 ## Done
 
+- [x] Cut the first release: `v0.4.1` tagged in git and pushed.
 - [x] Ran every `kopi` command against real GitHub (`list`, `view`, `create`, `--repo` link, `delete`, `fields`, `items`, `add`).
 - [x] Verified `--init` create-and-link live on `lateralblast/ocicat` (project #3), including the `PATH` argument.
 - [x] `--import` / `--update` can process a single file (`CHANGELOG.md` or `TODO.md`), with tests.

@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-10
+
+### Changed
+- First release tagged in git as `v0.4.1` (the tag and its remote copy point at the 0.4.1 commit). Later changes are numbered from 0.4.2.
+
 ## [0.4.1] - 2026-10-10
 
 ### Changed

@@ -16,7 +16,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 
 class GhError(RuntimeError):

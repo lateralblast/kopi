@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.7.9
+Version: 0.8.0
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -15,7 +15,7 @@ Version: 0.7.9
 - [Files to board](#files-to-board): [`--import`](#importing-changelogmd-todomd-issues-and-prs), [`--update`](#updating-the-project-from-changelogmd-todomd-issues-and-prs), [`--diff`](#comparing-the-project-with-the-files---diff), [`--sync`](#syncing-both-ways---sync), [extra sources](#extra-sources---code-comments---releases), [single files](#importing-or-updating-a-single-file)
 - [Board to files](#board-to-files): [`--export`](#exporting-board-items-to-todomd---export), [`--squash`](#ticking-todomd-from-the-board---squash), [issues and PRs](#issues-and-prs)
 - [Working on items](#working-on-items): [`--list`](#listing-items---list), [`--done` / `--start` / `--move`](#moving-items---done---start---move), [`--promote`](#promoting-drafts-to-issues---promote---promote-all), [`--open`](#opening-an-issue---open), [`--close`](#closing-an-issue---close), [`--reopen`](#reopening-an-issue---reopen), [`--archive`](#archiving-stale-items---archive), [`--restore`](#restoring-archived-items---restore), [`--dedupe`](#removing-duplicates---dedupe)
-- [Roadmap dates](#roadmap-dates): [`--setup-dates`, `--backfill-dates`](#roadmap-dates)
+- [Roadmap dates](#roadmap-dates): [`--setup-dates`, `--backfill-dates`](#roadmap-dates), [`--gantt`](#gantt-chart-of-the-roadmap---gantt)
 - [Reports](#reports): [`--report`](#progress-report---report), [`--rollup`](#roll-up-across-projects---rollup)
 
 ## Quick start
@@ -78,6 +78,7 @@ cd ~/code/my-repo
 # Reports
 ./kopi.py --setup-dates [--dry-run]                          # create the Started / Completed date fields (--import / --update do it too)
 ./kopi.py --backfill-dates [--dry-run]                       # fill the missing Started / Completed dates (--import / --update do it too; --no-dates skips)
+./kopi.py --gantt [releases|items] [--to FILE]               # draw the Roadmap as a Gantt chart (ROADMAP.md / .svg / .mmd)
 ./kopi.py --report [text|markdown]                           # progress summary of the project
 ./kopi.py --rollup [DIR ...]                                 # status counts across several repos' projects (or all open projects)
 
@@ -165,6 +166,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--open`: `{project, repo, dry_run, created: {title, url, number, item_id} | null}` (with `--local`: `{file, dry_run, created: {title, labels}}`); `--close`: `{repo, dry_run, closed: [{number, title, url}]}` (with `--local`: `{file, dry_run, closed: [{title, number?, url?}]}`); `--reopen`: `{repo, dry_run, reopened: [{number, title, url}], board: {project?, action}}` (`action` is `moved`, `added`, `unchanged` or `skipped`); `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}], annotated?}`; `--promote-all`: the same plus `failed: [{title, id, error}]`; `annotated` (with `--annotate`) is `[{title, number, entry}]`.
 - `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--dedupe`: `{project, dry_run, deleted}`.
 - `--import`, `--update`, `--done`, `--start` and `--move` also report `dates: [{title, field, date}]` when they set any. `--setup-dates`: `{project, dry_run, created: [{field}], existing: [{field, type}]}`; `--backfill-dates`: `{project, dry_run, set: [{title, field, date}]}`.
+- `--gantt`: `{project, view, file, dry_run, changed, skipped, tasks: [{section, name, start, end, state}]}`.
 - `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
 
 ### Limits
@@ -457,6 +459,72 @@ Filters that use them (field names are case-insensitive; use your own names if y
 | Done items that have a date | `status:Done has:completed` (then sort by Completed) |
 
 Dates are written `YYYY-MM-DD` and ranges use `..`. These follow GitHub's [filtering documentation](https://docs.github.com/en/issues/planning-and-tracking-with-projects/customizing-views-in-your-project/filtering-projects); the relative forms (`@today` with `d` or `w` offsets) are worth confirming with the Filter box's autocomplete, which lists what your view accepts. GitHub's documentation does not say how a Roadmap treats items that have no dates, so expect undated items (open work, for example) to be missing or shown separately there.
+
+### Gantt chart of the roadmap (`--gantt`)
+
+`kopi --gantt` draws the board's Roadmap as a Gantt chart from the Started and Completed dates, for a README, a wiki or a slide. It only reads the board.
+
+```
+kopi --gantt                         # releases view -> ROADMAP.md (a Mermaid chart GitHub renders inline)
+kopi --gantt items                   # one bar per work item instead
+kopi --gantt --to roadmap.svg        # a standalone image
+kopi --gantt --to chart.mmd          # raw Mermaid for other tools
+kopi --gantt --to -                  # print it
+```
+
+- **Two views.** `releases` (the default) draws one bar per changelog release date, from the previous release to that release, and merges versions released on the same day into one bar (`v0.4.3 to v0.4.7 (5 releases)`). `items` draws a bar for each Done item, from its Started to its Completed date, in a section per release, then `Other completed` for Done items that are not changelog entries. In both, In Progress items with a Started date are added as `active` bars running to today. Todo items and items with no dates are left out, and the count of skipped items is reported.
+- **Three formats, chosen by the file extension.** The default `ROADMAP.md` is Markdown with a ` ```mermaid ` block, which GitHub renders as a chart in the repository, READMEs and pull requests, and which diffs cleanly in git. `.mmd` is the raw Mermaid source. `.svg` is a standalone image drawn by kopi: plain colours, a dated axis, a dashed line for today, and a dark-mode variant for viewers that support `prefers-color-scheme`.
+- **Safe to re-run.** Each file starts with a marker line saying kopi generated it. The file is rewritten only if the chart changed, and a file without the marker (one you wrote by hand) is never overwritten unless you pass `--force`. `--dry-run` reports what would be written.
+- **It needs dates.** The bars come from the Started and Completed fields (see above); `--import` / `--update` fill them, and `--backfill-dates` fills any gaps. With no dated items it stops and says so. Use `[dates]` in `.kopi.toml` if your fields are named differently.
+- Long names are cut to 70 characters in Mermaid and 60 in SVG, and the characters Mermaid reserves (`#`, `:` and `;`) are written as entity codes so a title cannot break the chart.
+
+#### Example
+
+This is `kopi --gantt` run on the [druid](https://github.com/lateralblast/druid) project, which was imported with `kopi --import` (its 50 changelog releases become 30 bars, because releases made on the same day are merged). It shows 12 years of history on one chart.
+
+As an image (`kopi --gantt --to roadmap.svg`, saved here as [`docs/druid-roadmap.svg`](docs/druid-roadmap.svg)):
+
+![druid roadmap](docs/druid-roadmap.svg)
+
+As a Mermaid chart (`kopi --gantt`, the chart inside the `ROADMAP.md` it writes), which GitHub draws for you:
+
+```mermaid
+gantt
+    title druid roadmap
+    dateFormat YYYY-MM-DD
+    axisFormat %Y
+    section Releases
+    v0.0.1 :done, 2013-08-04, 1d
+    v0.0.2 to v0.0.3 (2 releases) :done, 2013-08-04, 2014-06-12
+    v0.0.4 to v0.0.5 (2 releases) :done, 2014-06-12, 2015-01-28
+    v0.0.6 to v0.0.8 (3 releases) :done, 2015-01-28, 2020-08-17
+    v0.0.9 :done, 2020-08-17, 2021-07-06
+    v0.1.0 to v0.1.2 (3 releases) :done, 2021-07-06, 2021-07-08
+    v0.1.3 :done, 2021-07-08, 2021-07-09
+    v0.1.4 :done, 2021-07-09, 2021-07-11
+    v0.1.5 :done, 2021-07-11, 2021-07-12
+    v0.1.6 :done, 2021-07-12, 2021-07-13
+    v0.1.7 :done, 2021-07-13, 2021-07-14
+    v0.1.8 to v0.2.0 (3 releases) :done, 2021-07-14, 2021-11-23
+    v0.2.1 :done, 2021-11-23, 2021-12-04
+    v0.2.2 :done, 2021-12-04, 2021-12-05
+    v0.2.3 to v0.2.4 (2 releases) :done, 2021-12-05, 2021-12-06
+    v0.2.5 :done, 2021-12-06, 2021-12-10
+    v0.2.6 :done, 2021-12-10, 2021-12-13
+    v0.2.7 :done, 2021-12-13, 2023-06-16
+    v0.2.8 :done, 2023-06-16, 2023-06-22
+    v0.2.9 :done, 2023-06-22, 2023-06-23
+    v0.3.0 :done, 2023-06-23, 2023-06-29
+    v0.3.1 to v0.3.2 (2 releases) :done, 2023-06-29, 2023-06-30
+    v0.3.3 to v0.3.4 (2 releases) :done, 2023-06-30, 2023-07-01
+    v0.3.5 :done, 2023-07-01, 2023-07-11
+    v0.3.6 to v0.3.8 (3 releases) :done, 2023-07-11, 2025-06-19
+    v0.3.9 :done, 2025-06-19, 2025-06-20
+    v0.4.0 to v0.4.2 (3 releases) :done, 2025-06-20, 2025-06-21
+    v0.4.3 to v0.4.7 (5 releases) :done, 2025-06-21, 2025-06-22
+    v0.4.8 to v0.4.9 (2 releases) :done, 2025-06-22, 2025-09-06
+    v0.5.0 :done, 2025-09-06, 2025-09-08
+```
 
 ## Reports
 

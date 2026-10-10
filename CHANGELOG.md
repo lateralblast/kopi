@@ -7,6 +7,12 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-11
+
+### Added
+- `--gantt [releases|items]` (with `--to FILE`, `--dry-run`, `--force`, `--json`): draw the project's Roadmap as a Gantt chart from the board's Started and Completed dates. `releases` (the default) draws one bar per changelog release date, merging releases that share a day, and `items` draws one bar per work item in a section per release. In Progress items with a Started date appear as bars running to today. The format follows the file extension: `ROADMAP.md` (the default) is Markdown with a Mermaid block, which GitHub renders inline; `.mmd` is raw Mermaid; `.svg` is a standalone image drawn by kopi, well-formed XML in plain colours with a dark-mode variant; `--to -` prints the chart. A file kopi did not generate is not overwritten without `--force`, and an unchanged chart is left alone. Documented in `README.md`.
+- Verified by rendering druid's imported history (30 release bars, 51 item bars) to SVG and viewing it. That caught two bugs before release: `--` is not allowed in an XML comment, so the SVG marker line made the file invalid, and the colours used CSS variables that some viewers ignore.
+
 ## [0.7.9] - 2026-10-11
 
 ### Changed

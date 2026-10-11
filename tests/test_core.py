@@ -312,3 +312,32 @@ def test_rate_limit_hint_gives_the_reset_time_when_the_budget_is_spent():
     with mock.patch("kopi.subprocess.run", side_effect=[failed, left]), pytest.raises(cli.GhError) as exc:
         cli.run("project", "list")
     assert str(exc.value) == "unknown owner type"                              # budget left: not a rate limit, so no hint
+
+
+DUPLICATE_CHANGELOG = """## [0.5.2] - 2025-09-20
+### Added
+- Standalone script.
+
+## [0.5.1] - 2025-09-19
+### Added
+- Standalone switch.
+
+## [0.5.2] - 2025-09-19
+### Fixed
+- Fixed imports.
+
+## [0.5.1]
+- Undated twin.
+"""
+
+
+def test_a_version_with_several_headings_takes_the_latest_date_and_is_reported(capsys):
+    assert cli.changelog_release_dates(DUPLICATE_CHANGELOG) == {"0.5.2": "2025-09-20", "0.5.1": "2025-09-19"}   # not just the last heading's
+    assert cli.duplicate_headings(DUPLICATE_CHANGELOG) == {"0.5.2": ["2025-09-20", "2025-09-19"], "0.5.1": ["2025-09-19", None]}
+    assert [v for v, _ in cli.parse_changelog(DUPLICATE_CHANGELOG)] == ["0.5.2", "0.5.1", "0.5.2", "0.5.1"]        # every entry is kept
+    cli.warn_duplicate_headings(DUPLICATE_CHANGELOG)
+    err = capsys.readouterr().err
+    assert "2 versions listed under more than one heading" in err and "0.5.2 (2025-09-20, 2025-09-19)" in err \
+        and "0.5.1 (2025-09-19, undated)" in err and "the latest date is used" in err
+    cli.warn_duplicate_headings("## [1.0.0] - 2026-01-01\n- a\n")
+    assert capsys.readouterr().err == ""

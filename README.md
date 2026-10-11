@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 1.0.7
+Version: 1.0.8
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -242,6 +242,7 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 - `TODO.md` items that duplicate an issue or PR title are skipped, so the linked item wins.
 - Open `TODO.md` entries (of four or more words) that start with the same word and share at least half of their first eight words are reported on stderr as `possible duplicate TODO.md entries`, also by `--update`. It is advice only: nothing is merged or skipped, and `--dedupe` still removes exact-title copies only.
 - Entries that read as a continuation of the one before them (they start with `Neither`, `Both`, `It`, `They`, `These`, `Also`, `Then`, ... or say `as above`) are reported on stderr too, since as a board item on their own they would mean nothing. Advice only; the entries are still imported.
+- A version that has more than one release heading (say one for Added and one for Fixed, as `manx` has for `0.5.1` and `0.5.2`) is reported on stderr: all of its entries are imported, and its release date is the latest of its headings.
 - Markdown bold (`**text**`, `__text__`) is removed from item titles (code spans are left alone); the body keeps the original text. A repo with issues turned off gets one `note:` from `--import` and nothing from the other commands.
 
 ### Updating the project from CHANGELOG.md, TODO.md, issues and PRs

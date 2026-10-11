@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "1.0.7"
+__version__ = "1.0.8"
 
 
 class GhError(RuntimeError):
@@ -901,7 +901,30 @@ def date_field_names(args):
 def changelog_release_dates(text):
     """{version: "YYYY-MM-DD"} for the release headings (`## [version] - date`, `## version - date`) that carry a date."""
     headings = (changelog_heading(line) for line in text.splitlines())
-    return {h[0]: h[1] for h in headings if h and h[1]}
+    dates = {}
+    for version, date in (h for h in headings if h and h[1]):
+        dates[version] = max(date, dates.get(version, date))   # a version listed twice takes the later date
+    return dates
+
+
+def duplicate_headings(text):
+    """{version: [dates]} for versions with more than one release heading (the date is None where a heading has none)."""
+    seen = {}
+    for line in text.splitlines():
+        heading = changelog_heading(line)
+        if heading:
+            seen.setdefault(heading[0], []).append(heading[1])
+    return {v: d for v, d in seen.items() if len(d) > 1}
+
+
+def warn_duplicate_headings(changelog):
+    """Warn on stderr about a version that has several `## [version]` headings (for example one for Added and one for
+    Fixed): their entries are all imported, and the version's date is the latest of its headings."""
+    dupes = duplicate_headings(changelog)
+    if dupes:
+        shown = ", ".join(f"{v} ({', '.join(d or 'undated' for d in dates)})" for v, dates in list(dupes.items())[:5])
+        print(f"warning: {_n(len(dupes), 'version')} listed under more than one heading in CHANGELOG.md: {shown}"
+              + (", ..." if len(dupes) > 5 else "") + "; the latest date is used", file=sys.stderr)
 
 
 def default_started(release_dates, completed):
@@ -1192,6 +1215,7 @@ def cmd_import(args):
     plan, skipped = build_plan(changelog, todo, linked)
     warn_similar_todos(todo)
     warn_context_dependent(changelog, todo)
+    warn_duplicate_headings(changelog)
     plan += extras
     total = len(plan) + len(linked)
     if args.dry_run:
@@ -1345,6 +1369,8 @@ def cmd_update(args):
     p = sync_plan(args)
     if getattr(args, "only", None) != "CHANGELOG.md":
         warn_similar_todos(_read("TODO.md"))
+    if getattr(args, "only", None) != "TODO.md":
+        warn_duplicate_headings(p.changelog)
     warn_context_dependent(p.changelog if getattr(args, "only", None) != "TODO.md" else "",
                            _read("TODO.md") if getattr(args, "only", None) != "CHANGELOG.md" else "")
     adds, link_adds, moves, number = p.adds, p.link_adds, p.moves, p.number

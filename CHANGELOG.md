@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-10-11
+
+### Changed
+- A version with more than one release heading in `CHANGELOG.md` (found importing `manx`: `0.5.1` and `0.5.2` each have an Added and a Fixed heading, and `0.5.2`'s two headings carry different dates) is reported by `--import` and `--update` (`2 versions listed under more than one heading`), and its release date is now the latest of its headings. Before, the heading that happened to come last in the file decided silently. Every entry is still imported. Documented in `README.md`.
+
 ## [1.0.7] - 2026-10-11
 
 ### Fixed

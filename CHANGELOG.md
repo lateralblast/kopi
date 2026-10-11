@@ -7,6 +7,16 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-11
+
+### Changed
+- Checked the Mermaid Gantt chart (the README block and a generated `ROADMAP.md`, including the `∶` colon look-alike) and the SVG in GitHub's renderer: both display correctly. No code change.
+
+## [1.0.1] - 2026-10-11
+
+### Changed
+- Created the Roadmap view (layout Roadmap, Started and Completed as the date fields) for the `kopi` and `druid` projects in the web UI, which the API cannot do; it displays correctly. No code change.
+
 ## [1.0.0] - 2026-10-11
 
 ### Changed

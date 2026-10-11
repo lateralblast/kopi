@@ -4,11 +4,11 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Open
 
-- [ ] Create the Roadmap view for the `kopi` and `druid` projects in the web UI (layout Roadmap, Started and Completed as the date fields); the API cannot do it.
-- [ ] Check the Mermaid chart in the README (and a generated `ROADMAP.md`) in GitHub's renderer; it has only been checked against the syntax.
 
 ## Done
 
+- [x] Checked the Mermaid chart (and `ROADMAP.md` output) in GitHub's renderer, and the SVG: both look fine.
+- [x] Created the Roadmap view (layout Roadmap, Started and Completed as the date fields) for the `kopi` and `druid` projects in the web UI; it looks fine.
 - [x] `--cleanup-tag` deletes a tag whose release is already gone, with tests; used to remove the leftover `0.8.2` tag.
 - [x] `--delete release --tag TAG [--cleanup-tag]` (and `--release TAG` as a spelling of `--tag`), with tests; run live on a throwaway draft release.
 - [x] Deleted the test GitHub release `0.8.2`.

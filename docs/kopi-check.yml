@@ -1,0 +1,29 @@
+# Example GitHub Actions workflow: fail a pull request when CHANGELOG.md / TODO.md and the
+# GitHub Project have drifted apart (`kopi --diff --check` exits 2 on any difference).
+#
+# Copy this to .github/workflows/kopi-check.yml in the repo that owns the project, and add a
+# repository secret named KOPI_TOKEN: a personal access token (classic) with the `project` and
+# `repo` scopes, or a fine-grained token with Projects read access. The workflow's own
+# GITHUB_TOKEN cannot read user or organisation Projects (v2), so it does not work here.
+# The check only reads the board; it never changes it or the files.
+name: kopi
+on:
+  pull_request:
+    paths: [CHANGELOG.md, TODO.md]
+  schedule:
+    - cron: "0 6 * * 1"      # weekly, to catch drift that came from the board side
+  workflow_dispatch:
+
+jobs:
+  in-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install git+https://github.com/lateralblast/kopi.git
+      - name: Board and files agree
+        env:
+          GH_TOKEN: ${{ secrets.KOPI_TOKEN }}    # gh reads this; no `gh auth login` needed
+        run: kopi --diff --check                 # add --owner ORG if the origin remote is a fork

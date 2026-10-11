@@ -66,7 +66,7 @@ def test_render_mermaid_is_safe_and_uses_one_day_durations():
     lines = text.splitlines()
     assert lines[:4] == ["gantt", "    title kopi roadmap", "    dateFormat YYYY-MM-DD", "    axisFormat %b %Y"]
     assert "    section v0.1.0" in lines
-    assert "    Second thing#58; with a colon#59; and #35;hash :done, 2026-01-01, 2026-02-01" in lines   # : ; # entity-encoded
+    assert "    Second thing∶ with a colon#59; and #35;hash :done, 2026-01-01, 2026-02-01" in lines   # colon becomes U+2236; ; and # are entity-encoded
     assert "    Same-day release :done, 2026-03-01, 1d" in lines                    # a one-day bar needs a duration
     assert "    In flight :active, 2026-09-01, 2026-10-11" in lines
     long = cli.render_mermaid("t", [{"section": "S", "name": "x" * 200, "start": D("2026-01-01"), "end": D("2026-01-05"), "state": "done"}])
@@ -145,3 +145,19 @@ def test_gantt_protects_a_hand_written_file_and_needs_dates(tmp_path, monkeypatc
         cli.main(["--gantt", "--update"])
     with pytest.raises(SystemExit):
         cli.main(["--gantt", "bogus"])
+
+
+def test_releases_view_draws_one_bar_per_version_when_all_releases_fall_on_two_days():
+    board = [{"id": f"V{i}", "title": f"[0.0.{i}] Thing {i}", "status": "Done", "started": day, "completed": day}
+             for i, day in enumerate(["2026-10-09"] * 5 + ["2026-10-11"] * 2, 1)]
+    tasks, _ = cli.gantt_tasks(board, "releases", mock.Mock(config_data={}), TODAY)
+    assert [t["name"] for t in tasks] == [f"v0.0.{i}" for i in range(1, 8)]
+    assert _tasks("releases")[0][1]["name"] == "v0.1.1 to v0.1.2 (2 releases)"   # three release days: still grouped
+
+
+def test_gantt_file_name_gets_a_hint_about_to(capsys):
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--gantt", "road.svg"])
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert "use --to road.svg" in err

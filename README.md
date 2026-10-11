@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.8.4
+Version: 0.8.8
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -226,6 +226,7 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 - Titles are cut to 100 characters; the full text goes in the item body.
 - The repo's issues and PRs (from `origin`) are added as real linked items, not drafts: open issue is **Todo**, closed issue **Done**, open PR **In Progress**, merged PR **Done**. Closed-unmerged PRs are skipped. If listing them fails, `kopi` warns and imports the files only.
 - `TODO.md` items that duplicate an issue or PR title are skipped, so the linked item wins.
+- Open `TODO.md` entries that share at least half their words (and have four or more) are reported on stderr as `possible duplicate TODO.md entries`, also by `--update`. It is advice only: nothing is merged or skipped, and `--dedupe` still removes exact-title copies only.
 
 ### Updating the project from CHANGELOG.md, TODO.md, issues and PRs
 
@@ -473,15 +474,15 @@ Dates are written `YYYY-MM-DD` and ranges use `..`. These follow GitHub's [filte
 kopi --gantt                         # releases view -> ROADMAP.md (a Mermaid chart GitHub renders inline)
 kopi --gantt items                   # one bar per work item instead
 kopi --gantt --to roadmap.svg        # a standalone image
-kopi --gantt --to chart.mmd          # raw Mermaid for other tools
+kopi --gantt --to chart.mmd          # raw Mermaid for other tools (`--gantt chart.mmd` is an error: the argument is the view)
 kopi --gantt --to -                  # print it
 ```
 
-- **Two views.** `releases` (the default) draws one bar per changelog release date, from the previous release to that release, and merges versions released on the same day into one bar (`v0.4.3 to v0.4.7 (5 releases)`). `items` draws a bar for each Done item, from its Started to its Completed date, in a section per release, then `Other completed` for Done items that are not changelog entries. In both, In Progress items with a Started date are added as `active` bars running to today. Todo items and items with no dates are left out, and the count of skipped items is reported.
+- **Two views.** `releases` (the default) draws one bar per changelog release date, from the previous release to that release, and merges versions released on the same day into one bar (`v0.4.3 to v0.4.7 (5 releases)`). If everything was released on one or two days, merging would leave one or two bars, so it draws a bar per version instead. `items` draws a bar for each Done item, from its Started to its Completed date, in a section per release, then `Other completed` for Done items that are not changelog entries. In both, In Progress items with a Started date are added as `active` bars running to today. Todo items and items with no dates are left out, and the count of skipped items is reported.
 - **Three formats, chosen by the file extension.** The default `ROADMAP.md` is Markdown with a ` ```mermaid ` block, which GitHub renders as a chart in the repository, READMEs and pull requests, and which diffs cleanly in git. `.mmd` is the raw Mermaid source. `.svg` is a standalone image drawn by kopi: plain colours, a dated axis, a dashed line for today, and a dark-mode variant for viewers that support `prefers-color-scheme`.
 - **Safe to re-run.** Each file starts with a marker line saying kopi generated it. The file is rewritten only if the chart changed, and a file without the marker (one you wrote by hand) is never overwritten unless you pass `--force`. `--dry-run` reports what would be written.
 - **It needs dates.** The bars come from the Started and Completed fields (see above); `--import` / `--update` fill them, and `--backfill-dates` fills any gaps. With no dated items it stops and says so. Use `[dates]` in `.kopi.toml` if your fields are named differently.
-- Long names are cut to 70 characters in Mermaid and 60 in SVG, and the characters Mermaid reserves (`#`, `:` and `;`) are written as entity codes so a title cannot break the chart.
+- Long names are cut to 70 characters in Mermaid and 60 in SVG, and the characters Mermaid reserves cannot break the chart: `#` and `;` are written as entity codes, and `:` becomes the look-alike `∶` (U+2236) so the raw `.mmd` stays readable.
 
 #### Example
 

@@ -292,3 +292,23 @@ def test_batched_writes_report_graphql_errors_and_missing_issues():
     with mock.patch("kopi.graphql", gql):
         cli.create_items(mock.Mock(json=True), info, [('Say "hi"\n— ünï', 'body with "quotes"\nand lines')], [])
     assert gql.created == [('Say "hi"\n— ünï', 'body with "quotes"\nand lines')]
+
+
+def test_similar_todos_flags_reworded_open_entries_only():
+    todo = ("- [ ] Start Ollama and the gateway at boot on this host (nothing starts at boot)\n"
+            "- [ ] Start Ollama and the Hermes gateway at boot, as systemd user services so they survive reboots\n"
+            "- [x] Start Ollama and the gateway at boot on this host\n"          # done entries are ignored
+            "- [ ] Retry the lfm2.5 multi-step test\n"
+            "- [ ] Fix it\n")                                                     # too short to compare
+    pairs = cli.similar_todos(todo)
+    assert len(pairs) == 1 and "on this host" in pairs[0][0] and "systemd" in pairs[0][1]
+
+
+def test_import_dry_run_warns_about_similar_todos_on_stderr(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "TODO.md").write_text("- [ ] Start Ollama and the gateway at boot on this host\n"
+                                      "- [ ] Start Ollama and the Hermes gateway at boot as services\n")
+    with mock.patch.object(cli, "fetch_linked", return_value=[]):
+        cli.main(["--owner", "o", "--import", "--dry-run"])
+    cap = capsys.readouterr()
+    assert "possible duplicate TODO.md entries" in cap.err and "possible duplicate" not in cap.out

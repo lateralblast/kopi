@@ -7,6 +7,26 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-10-11
+
+### Changed
+- In Mermaid Gantt output (`--gantt`, `.mmd` and `ROADMAP.md`) a colon in a task or section name is now written as the look-alike `∶` (U+2236) instead of the entity code `#58;`, so the raw file reads cleanly and still renders as a colon. `#` and `;` are still entity-encoded. Documented in `README.md`.
+
+## [0.8.7] - 2026-10-11
+
+### Fixed
+- `--gantt FILE` (a file name where the view goes) now says `'FILE' is not a view (releases or items); to choose the output file use --to FILE`, instead of only "invalid choice".
+
+## [0.8.6] - 2026-10-11
+
+### Fixed
+- `--gantt` in the releases view no longer collapses to one or two bars when every release falls on one or two days (a repo imported from a changelog written in a day or two, such as `havana`'s 66 releases on two dates). It draws a bar per version then; three or more release days still merge same-day releases. Documented in `README.md`.
+
+## [0.8.5] - 2026-10-11
+
+### Added
+- `--import` and `--update` warn on stderr about open `TODO.md` entries that share at least half their words (`possible duplicate TODO.md entries`), such as "Start Ollama and the gateway at boot" written twice in different words. The warning is advice only: nothing is merged or skipped. Documented in `README.md`.
+
 ## [0.8.4] - 2026-10-11
 
 ### Added

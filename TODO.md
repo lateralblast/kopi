@@ -10,9 +10,11 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 - [ ] A `[release]` section in `.kopi.toml` (for example a default tag prefix such as `v`) so `--release` does not need `--tag v...` every time.
 - [ ] Make `--report` read better for a repo whose whole record is a changelog (it says "1 done" next to 50 changelog entries in history).
 - [ ] Speed up imports further: stop polling for up to 30 s after the writes, which is now the largest part of an import.
+- [ ] Changelog bullets that only make sense after the previous one ("Neither is run by ...", "Both were run ...") become context-free board items; decide whether to warn about them (found importing `havana`).
 
 ## Done
 
+- [x] Fixes from importing `havana`: warn about similar open `TODO.md` entries, a bar per version in the releases Gantt when all releases share one or two days, a `--to` hint for `--gantt FILE`, and a readable colon in raw Mermaid output, with tests.
 - [x] `--list releases` (GitHub releases, or CHANGELOG.md versions with `--local`), with tests.
 - [x] Ran `kopi --sync` on the `kopi` board: 61 items added, 1 moved to Done, 108 dates set in 57 seconds (125 items, no duplicates), and `ISSUES.md` created.
 - [x] `--tag TAG` for `--release`, defaulting to the plain changelog version number, with tests.

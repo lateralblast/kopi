@@ -2,6 +2,7 @@
 import datetime
 import json
 import os
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -118,12 +119,12 @@ def test_writer_batches_writes_only_empty_values_and_skips_missing_fields(capsys
         assert writer
         writer.want({"id": "I1", "title": "t1"}, "2026-01-01", "2026-02-01")
         writer.want({"id": "I2", "title": "t2", "completed": "2026-09-09"}, "2026-01-01", "2026-02-01")   # Completed already set
-        for n in range(25):
+        for n in range(75):
             writer.want({"id": f"X{n}", "title": f"x{n}"}, None, "2026-02-01")
     fake = FakeGraphql()
     with mock.patch("kopi.graphql", fake):
         done = writer.flush()
-    assert len(done) == 2 + 1 + 25 and len(fake.queries) == 2               # t1 twice, t2 once (Completed was set), 25 more; 20 per request
+    assert len(done) == 2 + 1 + 75 and len(fake.queries) == 2               # t1 twice, t2 once (Completed was set), 75 more; 50 per request
     assert ("I2", "FC", "2026-02-01") not in fake.dates and ("I2", "FS", "2026-01-01") in fake.dates
     assert writer.queue == []
     # a board with no such fields: a falsy writer, so callers do nothing
@@ -267,3 +268,13 @@ def test_tick_date_searches_only_a_prefix_so_wrapped_entries_are_found():
     with mock.patch.object(cli, "_git_first_line", return_value="2026-10-07") as g:
         assert cli.tick_date(long) == "2026-10-07"
     assert g.call_args.args[3] == "-S- [x] " + long[:cli.TICK_PREFIX]
+
+
+def test_a_grouped_changelog_item_spans_its_releases():
+    ctx = SimpleNamespace(releases={"2.1.2": "2026-03-03", "2.1.1": "2026-03-02", "2.1.0": "2026-03-01", "2.0.0": "2026-02-01"}, linked={})
+    item = {"title": "[2.1] Releases 2.1.x", "status": "Done", "content": {}}
+    assert cli.resolve_dates(ctx, item) == ("2026-02-01", "2026-03-03")     # from the release before the group to its last
+    first = {"title": "[2.0] Releases 2.0.x", "status": "Done", "content": {}}
+    assert cli.resolve_dates(ctx, first) == ("2026-02-01", "2026-02-01")    # nothing earlier: a one-day bar
+    assert cli.resolve_dates(ctx, {**item, "status": "Todo"}) == (None, None)
+    assert cli.resolve_dates(ctx, {**item, "title": "[9.9] Releases 9.9.x"}) == (None, None)   # a group with no dated release

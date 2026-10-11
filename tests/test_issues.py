@@ -450,3 +450,92 @@ def test_annotate_todo_adds_the_reference_to_the_last_line_of_a_wrapped_entry(tm
     done = cli.annotate_todo([{"title": "Write the reference section and an example for every command.", "number": 7}])
     assert done[0]["entry"] == "Write the reference section and an example for every command. (#7)"
     assert (tmp_path / "TODO.md").read_text() == "- [ ] Write the reference section and an example\n  for every command. (#7)\n- [ ] Other\n"
+
+
+ROWS = [{"status": "Todo", "number": 3, "repository": "o/kopi", "title": "Login fails", "url": "https://github.com/o/kopi/issues/3",
+         "labels": ["bug"], "assignees": ["alice", "bob"]}]
+
+
+def test_export_lists_assignees_and_the_file_reads_back():
+    text = cli.render_issues(ROWS, 2, "o", "issues", [])
+    assert "- [#3](https://github.com/o/kopi/issues/3) Login fails (bug) @alice @bob\n" in text
+    [entry] = cli.scan_issue_lines(text)
+    assert entry["title"] == "Login fails" and entry["labels"] == ["bug"] and entry["number"] == 3
+    unassigned = cli.render_issues([{**ROWS[0], "assignees": [], "labels": []}], 2, "o", "issues", [])
+    assert "Login fails\n" in unassigned
+
+
+def test_linked_rows_carry_assignees_as_logins_or_names():
+    items = [{"title": "A", "status": "Todo", "assignees": ["alice"], "content": {"type": "Issue", "number": 1, "repository": "o/r"}},
+             {"title": "B", "status": "Todo", "assignees": [{"login": "bob"}], "content": {"type": "Issue", "number": 2, "repository": "o/r"}},
+             {"title": "C", "status": "Todo", "content": {"type": "Issue", "number": 3, "repository": "o/r"}}]
+    assert [r["assignees"] for r in cli.linked_rows(items, "issues")] == [["alice"], ["bob"], []]
+
+
+def _label_args(**kw):
+    return mock.Mock(apply_labels=True, dry_run=False, json=False, force=False, owner="o", **kw)
+
+
+def _gh_labels(repo_has=("bug", "docs", "urgent")):
+    calls = []
+
+    def run(*a):
+        calls.append(a)
+        return json.dumps([{"name": n} for n in repo_has]) if a[:2] == ("label", "list") else ""
+    return run, calls
+
+
+def test_apply_labels_adds_what_the_file_lists_and_github_lacks():
+    old = cli.render_issues([{**ROWS[0], "labels": ["bug", "docs", "Urgent"]}], 2, "o", "issues", [])
+    rows = [dict(ROWS[0])]
+    run, calls = _gh_labels()
+    with mock.patch("kopi.run", side_effect=run):
+        changes = cli.apply_linked_labels(_label_args(), "issues", rows, old)
+    assert changes == [{"number": 3, "repository": "o/kopi", "add": ["docs", "urgent"]}]     # repo's own spelling
+    assert ("issue", "edit", "3", "--repo", "o/kopi", "--add-label", "docs,urgent") in calls
+    assert rows[0]["labels"] == ["bug", "docs", "urgent"]                                      # so the rewritten file has both
+
+
+def test_apply_labels_never_removes_and_skips_unknown_labels(capsys):
+    old = cli.render_issues([{**ROWS[0], "labels": ["nonesuch"]}], 2, "o", "issues", [])   # file lacks "bug", GitHub has it
+    rows = [dict(ROWS[0])]
+    run, calls = _gh_labels()
+    with mock.patch("kopi.run", side_effect=run):
+        assert cli.apply_linked_labels(_label_args(), "issues", rows, old) == []
+    assert not [c for c in calls if c[1:2] == ("edit",)] and rows[0]["labels"] == ["bug"]
+    assert "labels not in the repo, so not applied: nonesuch" in capsys.readouterr().err
+
+
+def test_apply_labels_dry_run_and_prs():
+    old = cli.render_issues([{**ROWS[0], "labels": ["bug", "docs"]}], 2, "o", "prs", [])
+    run, calls = _gh_labels()
+    args = _label_args()
+    args.dry_run = True
+    with mock.patch("kopi.run", side_effect=run):
+        changes = cli.apply_linked_labels(args, "prs", [dict(ROWS[0])], old)
+    assert changes[0]["add"] == ["docs"] and not [c for c in calls if c[1:2] == ("edit",)]
+    args.dry_run = False
+    with mock.patch("kopi.run", side_effect=run):
+        cli.apply_linked_labels(args, "prs", [dict(ROWS[0])], old)
+    assert ("pr", "edit", "3", "--repo", "o/kopi", "--add-label", "docs") in calls
+
+
+def test_export_apply_labels_is_wired_through_and_reported(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _run_update(ISSUE_BOARD, argv=("--export", "issues"))
+    text = (tmp_path / "ISSUES.md").read_text()
+    capsys.readouterr()
+    fake = [{"number": 3, "repository": "o/kopi", "add": ["docs"]}]
+    with mock.patch("kopi.apply_linked_labels", return_value=fake) as apply:
+        _run_update(ISSUE_BOARD, argv=("--json", "--export", "issues", "--apply-labels"), issues_md=text)
+    assert apply.called and json.loads(capsys.readouterr().out)["labels_added"] == fake
+    with mock.patch("kopi.apply_linked_labels") as apply:
+        _run_update(ISSUE_BOARD, argv=("--json", "--export", "issues"), issues_md=text)         # without the flag: never
+    assert not apply.called and "labels_added" not in json.loads(capsys.readouterr().out)
+
+
+def test_apply_labels_needs_an_export_squash_or_sync():
+    with pytest.raises(SystemExit):
+        cli.main(["--update", "--apply-labels"])
+    with pytest.raises(SystemExit):
+        cli.main(["--export", "todo", "--apply-labels"])

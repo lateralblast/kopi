@@ -1,4 +1,5 @@
 """--report and --rollup."""
+import datetime
 import json
 import os
 from unittest import mock
@@ -125,3 +126,87 @@ def test_report_keeps_shipped_history_apart_from_the_percentage(capsys):
 def test_report_reads_the_board_only_once(capsys):
     rc, rj, _ = _run_update(REPORT_BOARD, argv=("--report",))
     assert rc == 0 and len([c for c in rj.call_args_list if c.args[1] == "item-list"]) == 1   # reading costs API points per item
+
+
+NAMES = {"started": "Started", "completed": "Completed"}
+
+
+def _item(title, started=None, completed=None):
+    return {"id": title, "title": title, "status": "Done", "started": started, "completed": completed, "content": {}}
+
+
+def test_trends_count_releases_and_completed_work_by_month():
+    items = [_item("Fix login", "2026-08-01", "2026-08-05"), _item("Add search", "2026-08-10", "2026-09-10"),
+             _item("Same day", "2026-09-02", "2026-09-02"), _item("No dates"),
+             _item("[1.0.1] Not work", "2026-08-01", "2026-09-01")]                 # changelog entries are not work items
+    releases = {"1.0.0": "2026-08-01", "1.0.1": "2026-08-01", "1.1.0": "2026-09-15"}  # two versions on one day both count
+    t = cli.build_trends(items, releases, NAMES, datetime.date(2026, 9, 20), months=3)
+    assert t["months"] == [{"month": "2026-07", "releases": 0, "completed": 0},
+                           {"month": "2026-08", "releases": 2, "completed": 1},
+                           {"month": "2026-09", "releases": 1, "completed": 2}]
+    assert t["cycle_days"] == {"n": 3, "median": 4, "mean": 11.7, "longest": 31}
+    assert t["release_interval_days"] == {"n": 1, "median": 45, "mean": 45, "longest": 45}      # gaps between release days
+
+
+def test_trends_window_crosses_a_year_and_ignores_older_dates():
+    t = cli.build_trends([_item("Old", "2020-01-01", "2020-01-03")], {"1.0.0": "2025-12-30"}, NAMES, datetime.date(2026, 2, 1), months=3)
+    assert [m["month"] for m in t["months"]] == ["2025-12", "2026-01", "2026-02"]
+    assert t["months"][0]["releases"] == 1 and all(m["completed"] == 0 for m in t["months"])
+    assert t["cycle_days"]["n"] == 1                                    # the span still counts towards cycle time
+
+
+def test_trends_with_nothing_to_measure():
+    t = cli.build_trends([_item("Undated")], {}, NAMES, datetime.date(2026, 9, 20), months=2)
+    assert t["cycle_days"] is None and t["release_interval_days"] is None and all(not m["releases"] for m in t["months"])
+
+
+def test_trends_honour_configured_date_field_names():
+    item = {"id": "a", "title": "Ship it", "status": "Done", "began": "2026-09-01", "finished": "2026-09-04", "content": {}}
+    t = cli.build_trends([item], {}, {"started": "Began", "completed": "Finished"}, datetime.date(2026, 9, 20), months=1)
+    assert t["months"][0]["completed"] == 1 and t["cycle_days"]["median"] == 3
+
+
+def test_report_shows_trends_in_text_and_json(capsys):
+    board = REPORT_BOARD + [_item("Dated work", "2026-10-01", "2026-10-04")]
+    with mock.patch("kopi.datetime") as dt:
+        dt.date.today.return_value = datetime.date(2026, 10, 12)
+        dt.date.fromisoformat = datetime.date.fromisoformat
+        _run_update(board, argv=("--report",))
+    out = capsys.readouterr().out
+    assert "Trends (last 12 months):" in out and "2026-10:" in out and "1 work item completed" in out
+    assert "Cycle time (Started to Completed): median 3 days, mean 3 days, longest 3 days (1 item)" in out
+    _run_update(board, argv=("--json", "--report"))
+    trends = json.loads(capsys.readouterr().out)["trends"]
+    assert len(trends["months"]) == 12 and set(trends) == {"months", "cycle_days", "release_interval_days"}
+
+
+def test_report_has_no_trends_section_without_dates(capsys):
+    _run_update(REPORT_BOARD, argv=("--report",), changelog="# Changelog\n\n## [0.0.1]\n- Undated release entry\n")
+    assert "Trends" not in capsys.readouterr().out
+
+
+def _linked(number, status, milestone=None):
+    item = {"id": f"L{number}", "title": f"Issue {number}", "status": status, "content": {"type": "Issue", "number": number, "repository": "o/kopi"}}
+    if milestone:
+        item["milestone"] = milestone
+    return item
+
+
+def test_milestones_count_done_items_and_sort_by_due_date():
+    items = [_linked(1, "Done", {"title": "v2.0", "dueOn": "2026-12-01T00:00:00Z"}), _linked(2, "Todo", {"title": "v2.0", "dueOn": "2026-12-01T00:00:00Z"}),
+             _linked(3, "Done", {"title": "v1.5", "dueOn": "2026-11-01T00:00:00Z"}), _linked(4, "Todo", {"title": "Someday", "dueOn": None}),
+             _linked(5, "Done", "Backlog"), _linked(6, "Todo"), _item("A draft")]
+    assert cli.build_milestones(items) == [
+        {"title": "v1.5", "due": "2026-11-01", "done": 1, "total": 1}, {"title": "v2.0", "due": "2026-12-01", "done": 1, "total": 2},
+        {"title": "Backlog", "due": None, "done": 1, "total": 1}, {"title": "Someday", "due": None, "done": 0, "total": 1}]
+    assert cli.build_milestones([_item("A draft")]) == []
+
+
+def test_report_lists_milestone_progress(capsys):
+    board = REPORT_BOARD + [_linked(10, "Done", {"title": "v2.0", "dueOn": "2026-12-01T00:00:00Z"}), _linked(11, "Todo", {"title": "v2.0", "dueOn": "2026-12-01T00:00:00Z"})]
+    _run_update(board, argv=("--report",))
+    assert "Milestones:\n  - v2.0: 1 of 2 done (due 2026-12-01)" in capsys.readouterr().out
+    _run_update(board, argv=("--json", "--report"))
+    assert json.loads(capsys.readouterr().out)["milestones"] == [{"title": "v2.0", "due": "2026-12-01", "done": 1, "total": 2}]
+    _run_update(REPORT_BOARD, argv=("--report",))
+    assert "Milestones" not in capsys.readouterr().out

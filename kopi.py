@@ -15,12 +15,14 @@ import fnmatch
 import json
 import os
 import re
+import statistics
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 
-__version__ = "1.1.1"
+__version__ = "1.1.8"
 
 
 class GhError(RuntimeError):
@@ -201,8 +203,8 @@ query($id: ID!, $cursor: String) { node(id: $id) { ... on ProjectV2 { items(firs
       ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } } } }
     content { __typename
       ... on DraftIssue { title body }
-      ... on Issue { title body url number repository { nameWithOwner } labels(first: 10) { nodes { name } } }
-      ... on PullRequest { title body url number repository { nameWithOwner } labels(first: 10) { nodes { name } } } } } } } } }
+      ... on Issue { title body url number repository { nameWithOwner } labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } } milestone { title dueOn } }
+      ... on PullRequest { title body url number repository { nameWithOwner } labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } } milestone { title dueOn } } } } } } } }
 """ % (LEAN_PAGE, LEAN_FIELD_VALUES)
 
 
@@ -219,6 +221,10 @@ def lean_item(node):
             item["repository"] = f"https://github.com/{content['repository']['nameWithOwner']}"
             if labels := [n["name"] for n in (content.get("labels") or {}).get("nodes", [])]:
                 item["labels"] = labels
+            if assignees := [n["login"] for n in (content.get("assignees") or {}).get("nodes", [])]:
+                item["assignees"] = assignees
+            if content.get("milestone"):
+                item["milestone"] = {"title": content["milestone"]["title"], "dueOn": content["milestone"].get("dueOn")}
     for value in node["fieldValues"]["nodes"]:
         name = ((value.get("field") or {}).get("name") or "").lower()
         raw = next((value[k] for k in ("name", "date", "text", "number", "title") if k in value), None)
@@ -263,12 +269,13 @@ def board_items(args, number):
 
 
 CONFIG_FILE = ".kopi.toml"
-CONFIG_KEYS = {"owner": str, "project": str, "status": dict, "sources": dict, "comments": dict, "repos": list, "dates": dict, "sections": dict, "release": dict}
+CONFIG_KEYS = {"owner": str, "project": str, "status": dict, "sources": dict, "comments": dict, "repos": list, "dates": dict, "sections": dict, "release": dict, "changelog": dict}
 SOURCES_KEYS = {"code_comments": bool, "releases": bool}
 COMMENTS_KEYS = {"tags": list, "include": list, "exclude": list}
 DATES_KEYS = {"started": str, "completed": str, "enabled": bool}
 SECTIONS_KEYS = {"enabled": bool, "field": str}
 RELEASE_KEYS = {"tag_prefix": str}
+CHANGELOG_KEYS = {"last": int, "since": str, "group": str}
 
 
 def _toml_value(raw):
@@ -357,12 +364,19 @@ def load_config(path, required=False):
         elif not isinstance(value, CONFIG_KEYS[key]):
             raise GhError(f"{path}: {key} must be a {CONFIG_KEYS[key].__name__}")
     for table, known in (("sources", SOURCES_KEYS), ("comments", COMMENTS_KEYS), ("dates", DATES_KEYS), ("sections", SECTIONS_KEYS),
-                         ("release", RELEASE_KEYS)):
+                         ("release", RELEASE_KEYS), ("changelog", CHANGELOG_KEYS)):
         for key, value in (cfg.get(table) or {}).items():
             if key not in known:
                 print(f"warning: {path}: unknown setting {table}.{key} ignored", file=sys.stderr)
             elif not isinstance(value, known[key]):
                 raise GhError(f"{path}: {table}.{key} must be a {known[key].__name__}")
+    window = cfg.get("changelog") or {}
+    if isinstance(window.get("last"), int) and (isinstance(window["last"], bool) or window["last"] < 1):
+        raise GhError(f"{path}: changelog.last must be a whole number of releases, 1 or more")
+    if isinstance(window.get("since"), str) and not re.fullmatch(r"\d+(\.\d+){0,2}", window["since"]):
+        raise GhError(f"{path}: changelog.since must be a version such as 16.0.0")
+    if isinstance(window.get("group"), str) and window["group"] != "minor":
+        raise GhError(f"{path}: changelog.group must be \"minor\"")
     return cfg
 
 
@@ -374,6 +388,8 @@ def apply_config(args, cfg):
     sources = cfg.get("sources") or {}
     args.code_comments = args.code_comments or bool(sources.get("code_comments"))
     args.releases = args.releases or bool(sources.get("releases"))
+    CHANGELOG_WINDOW.clear()
+    CHANGELOG_WINDOW.update(cfg.get("changelog") or {})
 
 
 def _owner(args):
@@ -548,8 +564,57 @@ def bullet_text(lines, first, last):
     return " ".join([lines[first][2:].strip()] + [l.strip() for l in lines[first + 1:last + 1]])
 
 
-def parse_changelog(text):
-    """[(version, entry)] for every bullet under a release heading, in file order (a wrapped bullet is one entry)."""
+CHANGELOG_WINDOW = {}  # [changelog] last / since from .kopi.toml: which releases of a long CHANGELOG.md are tracked
+
+
+def changelog_window(entries):
+    """`entries` ([(version, entry)], newest release first) cut to the [changelog] window: the newest `last` releases
+    that have entries and/or those at or above version `since`. `Unreleased` entries are always kept."""
+    last, since = CHANGELOG_WINDOW.get("last"), CHANGELOG_WINDOW.get("since")
+    if not (last or since):
+        return entries
+    releases = list(dict.fromkeys(v for v, _ in entries if v != "Unreleased"))
+    keep = set(releases[:last] if last else releases)
+    if since:
+        keep = {v for v in keep if version_key(v) >= version_key(since)}
+    return [(v, e) for v, e in entries if v == "Unreleased" or v in keep]
+
+
+GROUP_VERSION = re.compile(r"\d+\.\d+")
+
+
+def minor_of(version):
+    """`16.5` for `16.5.3`; the version itself unless it is a plain MAJOR.MINOR.PATCH."""
+    return ".".join(version.split(".")[:2]) if re.fullmatch(r"\d+\.\d+\.\d+", version) else version
+
+
+def group_minor(entries):
+    """`entries` ([(version, entry)], newest first) with each MAJOR.MINOR collapsed to one `("16.5", "Releases 16.5.x")`
+    entry, at the place its newest release was. `Unreleased` and versions that are not MAJOR.MINOR.PATCH stay as they are."""
+    out, seen = [], set()
+    for version, entry in entries:
+        group = minor_of(version)
+        if group == version:
+            out.append((version, entry))
+        elif group not in seen:
+            seen.add(group)
+            out.append((group, f"Releases {group}.x"))
+    return out
+
+
+def group_bodies(entries):
+    """{"16.5": "- 16.5.9: text\n- 16.5.8: text", ...}: what each minor version's grouped item holds, newest first."""
+    bodies = {}
+    for version, entry in entries:
+        if minor_of(version) != version:
+            bodies.setdefault(minor_of(version), []).append(f"- {version}: {entry}")
+    return {group: "\n".join(lines) for group, lines in bodies.items()}
+
+
+def parse_changelog(text, raw=False):
+    """[(version, entry)] for every bullet under a release heading, in file order (a wrapped bullet is one entry),
+    limited to the [changelog] window when .kopi.toml sets one and, with `group = "minor"`, collapsed to one entry
+    per MAJOR.MINOR (`raw` returns the individual bullets either way)."""
     lines, items, version = text.splitlines(), [], None
     blocks = dict(bullet_blocks(lines))
     for n, line in enumerate(lines):
@@ -558,7 +623,8 @@ def parse_changelog(text):
             version = heading[0]
         elif version and n in blocks:
             items.append((version, bullet_text(lines, n, blocks[n])))
-    return items
+    items = changelog_window(items)
+    return group_minor(items) if CHANGELOG_WINDOW.get("group") == "minor" and not raw else items
 
 
 def parse_todo(text):
@@ -589,14 +655,15 @@ def build_plan(changelog, todo, linked=()):
     done ones that duplicate a changelog entry and any that duplicate a linked
     issue/PR (`linked` is [(status, title, url)]; those are added separately).
     """
-    entries = parse_changelog(changelog)
+    entries, raw = parse_changelog(changelog), parse_changelog(changelog, raw=True)
+    bodies = group_bodies(raw) if CHANGELOG_WINDOW.get("group") == "minor" else {}
     plan, skipped = [], []
     for version, text in reversed(entries):
         title = _title(f"[{version}] {strip_emphasis(text)}")
-        plan.append(("Done", title, text if title != f"[{version}] {text}" else ""))
+        plan.append(("Done", title, bodies.get(version) or (text if title != f"[{version}] {text}" else "")))
     for status, text in parse_todo(todo):
         if any(similar(text, t) for _, t, _ in linked) or \
-                (status == "Done" and any(similar(text, e) for _, e in entries)):
+                (status == "Done" and any(similar(text, e) for _, e in raw)):
             skipped.append(text)
             continue
         title = _title(strip_emphasis(text))
@@ -638,7 +705,7 @@ def context_dependent(text):
 
 def warn_context_dependent(changelog, todo, limit=5):
     """Warn on stderr about changelog and TODO entries that probably only make sense next to the entry before them."""
-    found = [f"[{v}] {e}" for v, e in parse_changelog(changelog) if context_dependent(e)]
+    found = [f"[{v}] {e}" for v, e in parse_changelog(changelog, raw=True) if context_dependent(e)]
     found += [t for st, t in parse_todo(todo) if context_dependent(t)]
     if found:
         print(f"warning: {_n(len(found), 'entry').replace('entrys', 'entries')} may not make sense on their own as board items "
@@ -779,7 +846,7 @@ def release_items(slug, changelog):
     except GhError as e:
         print(f"warning: could not list tags for {slug}: {e}", file=sys.stderr)
         return []
-    in_changelog = {v for v, _ in parse_changelog(changelog)}
+    in_changelog = {v for v, _ in parse_changelog(changelog, raw=True)}
     return [("Done", _title(RELEASE_PREFIX + tag), "") for tag in tags if tag.lstrip("vV") not in in_changelog]
 
 
@@ -835,7 +902,9 @@ def _status_setter(args, number, needed):
     return set_status
 
 
-BATCH = 20  # GraphQL operations per request when creating items, setting statuses and writing dates
+BATCH = 20  # GraphQL operations per request when looking up issue / PR ids
+WRITE_BATCH = 50  # mutations per request: the server spends ~0.7 s per request and ~0.115 s per mutation, so 50 beats 20 by about a quarter
+WRITE_WORKERS = 3  # parallel requests for writes that are safe to repeat; 4 made GitHub answer "something went wrong"
 
 
 def _gql_str(text):
@@ -843,18 +912,43 @@ def _gql_str(text):
     return json.dumps(text, ensure_ascii=False)
 
 
-def mutate_batched(args, parts, label):
-    """Run GraphQL mutation `parts` (each `fieldName(input: {...}) { ... }`) BATCH at a time, one request per batch,
-    reporting progress as `label n/total`. Returns each part's result data, in order; GhError on any GraphQL error."""
-    results = []
-    for i in range(0, len(parts), BATCH):
-        chunk = parts[i:i + BATCH]
-        result = graphql("mutation { " + " ".join(f"a{n}: {p}" for n, p in enumerate(chunk)) + " }")
-        if result.get("errors"):
-            raise GhError("; ".join(e.get("message", "?") for e in result["errors"]))
-        results += [result["data"][f"a{n}"] for n in range(len(chunk))]
-        progress(args, f"  {label} {len(results)}/{len(parts)}")
-    return results
+def _send_mutations(chunk):
+    """One request carrying the mutations in `chunk`; returns each one's result data, in order. GhError on any GraphQL error."""
+    result = graphql("mutation { " + " ".join(f"a{n}: {p}" for n, p in enumerate(chunk)) + " }")
+    if result.get("errors"):
+        raise GhError("; ".join(e.get("message", "?") for e in result["errors"]))
+    return [result["data"][f"a{n}"] for n in range(len(chunk))]
+
+
+def mutate_batched(args, parts, label, repeatable=False):
+    """Run GraphQL mutation `parts` (each `fieldName(input: {...}) { ... }`) WRITE_BATCH at a time, one request per batch,
+    reporting progress as `label n/total`. Returns each part's result data, in order; GhError on any GraphQL error.
+
+    `repeatable` says running a mutation twice is harmless (setting a field value, unlike creating an item): the requests
+    then go WRITE_WORKERS at a time, and a request that fails is retried on its own once the others are done."""
+    chunks = [parts[i:i + WRITE_BATCH] for i in range(0, len(parts), WRITE_BATCH)]
+    results, done = [None] * len(chunks), 0
+
+    def finished(n, data):
+        nonlocal done
+        results[n], done = data, done + len(chunks[n])
+        progress(args, f"  {label} {done}/{len(parts)}")
+
+    if not repeatable or len(chunks) < 2:
+        for n, chunk in enumerate(chunks):
+            finished(n, _send_mutations(chunk))
+    else:
+        failed = []
+        with ThreadPoolExecutor(WRITE_WORKERS) as pool:
+            futures = {pool.submit(_send_mutations, chunk): n for n, chunk in enumerate(chunks)}
+            for future in as_completed(futures):
+                try:
+                    finished(futures[future], future.result())
+                except GhError:
+                    failed.append(futures[future])
+        for n in sorted(failed):
+            finished(n, _send_mutations(chunks[n]))
+    return [r for data in results for r in data]
 
 
 def content_ids(args, urls):
@@ -894,13 +988,13 @@ def create_items(args, info, drafts, urls):
 
 
 def set_statuses(args, info, pairs):
-    """Set the Status of many items at once: pairs is [(item id, status)], written BATCH per request."""
+    """Set the Status of many items at once: pairs is [(item id, status)], written WRITE_BATCH per request, several requests at once."""
     if pairs:
         progress(args, f"Setting {len(pairs)} statuses...")
         mutate_batched(args, [
             f"updateProjectV2ItemFieldValue(input: {{projectId: {_gql_str(info.project_id)}, itemId: {_gql_str(i)}, "
             f"fieldId: {_gql_str(info.field_id)}, value: {{singleSelectOptionId: {_gql_str(info.option(st))}}}}}) "
-            "{ projectV2Item { id } }" for i, st in pairs], "set")
+            "{ projectV2Item { id } }" for i, st in pairs], "set", repeatable=True)
 
 
 SETTLE_TIMEOUT, SETTLE_INTERVAL = 30, 2
@@ -1067,6 +1161,9 @@ def resolve_dates(ctx, item):
         completed = finished
     elif m and m.group(1) in ctx.releases:
         completed = ctx.releases[m.group(1)]
+    elif m and (group := [d for v, d in ctx.releases.items() if minor_of(v) == m.group(1) != v]):
+        completed = max(group)    # a `[16.5]` item (changelog.group): from the release before the group to its last
+        started = default_started(ctx.releases.values(), min(group)) if status == "Done" else None
     elif title.startswith(RELEASE_PREFIX):
         completed = tag_date(title[len(RELEASE_PREFIX):])
     elif status == "Done":
@@ -1133,7 +1230,7 @@ class DateWriter:
             mutate_batched(self.args, [
                 f'updateProjectV2ItemFieldValue(input: {{projectId: "{self.project_id}", itemId: "{q["id"]}", '
                 f'fieldId: "{q["field_id"]}", value: {{date: "{q["date"]}"}}}}) {{ projectV2Item {{ id }} }}'
-                for q in self.queue], "set")
+                for q in self.queue], "set", repeatable=True)
         self.queue = []
         return done
 
@@ -1229,7 +1326,7 @@ def sync_sections(args, number, items, todo):
         mutate_batched(args, [
             f"updateProjectV2ItemFieldValue(input: {{projectId: {_gql_str(project_id)}, itemId: {_gql_str(i['id'])}, "
             f"fieldId: {_gql_str(field['id'])}, value: {{text: {_gql_str(sec)}}}}}) {{ projectV2Item {{ id }} }}"
-            for i, sec in queue], "set")
+            for i, sec in queue], "set", repeatable=True)
     return [{"title": i["title"], "section": sec} for i, sec in queue]
 
 
@@ -1331,7 +1428,7 @@ def cmd_import(args):
 
 
 RANK = {"Todo": 0, "In Progress": 1, "Done": 2}
-CHANGELOG_TITLE = re.compile(r"^\[(\d+\.\d+\.\d+|Unreleased)\] ")
+CHANGELOG_TITLE = re.compile(r"^\[(\d+\.\d+(?:\.\d+)?|Unreleased)\] ")
 
 
 def _item_url(item):
@@ -1432,8 +1529,14 @@ def sync_plan(args, items=None):
     matched_ids = {i["id"] for i in matched.values()}
     # items from an opt-in source that is switched off this run are not orphans, or --archive would sweep them away
     off = tuple(p for p, on in ((CODE_PREFIX, args.code_comments), (RELEASE_PREFIX, args.releases)) if not on)
+    # likewise, release entries the [changelog] window leaves out are not tracked, so they are not orphans either
+    kept = {v for v, _ in parse_changelog(changelog)} | {"Unreleased"} if CHANGELOG_WINDOW else None
+
+    def outside_window(item):
+        m = CHANGELOG_TITLE.match(item["title"])
+        return kept is not None and bool(m) and m.group(1) not in kept
     orphans = [i for i in existing if i["id"] not in matched_ids and i["id"] not in linked_ids
-               and not i["title"].startswith(off)]
+               and not i["title"].startswith(off) and not outside_window(i)]
     return SimpleNamespace(number=number, adds=adds, link_adds=link_adds, moves=moves, ahead=ahead, orphans=orphans, items=existing, ticks=ticks,
                            changelog=changelog)
 
@@ -1719,7 +1822,7 @@ ISSUE_LINE = re.compile(r"^\s*[-*]\s+(?:\[[ x~]\]\s+)?(?:(\[[^\]]*\])\(([^)]*)\)
 
 
 def render_issues(rows, project, owner, kind="issues", pending=()):
-    """ISSUES.md (or PRS.md) text for `rows` ([{status, number, repository, title, url, labels}]), grouped by board status.
+    """ISSUES.md (or PRS.md) text for `rows` ([{status, number, repository, title, url, labels, assignees}]), grouped by board status.
 
     `pending` is [(title, section, labels)] of local-only entries (no link yet, from `--open --local`), listed
     after the board's rows in their section. `project` None means the file is being created locally."""
@@ -1740,7 +1843,8 @@ def render_issues(rows, project, owner, kind="issues", pending=()):
         for r in group:
             ref = f"{r['repository']}#{r['number']}" if multi else f"#{r['number']}"
             labels = f" ({', '.join(r['labels'])})" if r["labels"] else ""
-            out.append(f"- [{ref}]({r['url']}) {r['title']}{labels}")
+            people = "".join(f" @{a}" for a in r.get("assignees") or [])
+            out.append(f"- [{ref}]({r['url']}) {r['title']}{labels}{people}")
         out += [local_issue_line(title, labels) for title, _, labels in extra]
         out.append("")
     return "\n".join(out)
@@ -1752,12 +1856,45 @@ def local_issue_line(title, labels):
 
 
 def linked_rows(items, kind):
-    """[{status, number, repository, title, url, labels}] for the board items of one kind (issues or prs)."""
+    """[{status, number, repository, title, url, labels, assignees}] for the board items of one kind (issues or prs)."""
     ctype = LINKED_EXPORTS[kind][1]
     return [{"status": i.get("status"), "number": c.get("number"), "repository": c.get("repository", ""),
              "title": i["title"], "url": _item_url(i),
-             "labels": [l if isinstance(l, str) else l.get("name", "") for l in (i.get("labels") or [])]}
+             "labels": [l if isinstance(l, str) else l.get("name", "") for l in (i.get("labels") or [])],
+             "assignees": [a if isinstance(a, str) else a.get("login", "") for a in (i.get("assignees") or [])]}
             for i in items if (c := i.get("content") or {}).get("type") == ctype]
+
+
+def apply_linked_labels(args, kind, rows, old):
+    """Add to GitHub the labels the existing ISSUES.md / PRS.md text `old` lists for a linked entry that the board's
+    row lacks, and put them in `rows` so the rewritten file shows both. Labels are only ever added, never removed (a
+    label missing from the file may just mean it was added on GitHub since), and labels the repo does not have are
+    warned about, not created. Returns [{number, repository, add}]; nothing is written under --dry-run."""
+    by_url = {r["url"]: r for r in rows if r["url"]}
+    repo_labels, changes, unknown = {}, [], set()
+    for e in scan_issue_lines(old):
+        row = by_url.get(e["url"])
+        if not row:
+            continue
+        slug = row["repository"]
+        have = {l.casefold() for l in row["labels"]}
+        wanted = [l for l in dict.fromkeys(e["labels"]) if l.casefold() not in have]
+        if not wanted:
+            continue
+        if slug not in repo_labels:
+            found = json.loads(run("label", "list", "--repo", slug, "--json", "name", "--limit", str(LINKED_LIMIT)) or "[]")
+            repo_labels[slug] = {r["name"].casefold(): r["name"] for r in found}
+        add = [repo_labels[slug][l.casefold()] for l in wanted if l.casefold() in repo_labels[slug]]
+        unknown.update(l for l in wanted if l.casefold() not in repo_labels[slug])
+        if not add:
+            continue
+        if not args.dry_run:
+            run("issue" if kind == "issues" else "pr", "edit", str(row["number"]), "--repo", slug, "--add-label", ",".join(add))
+        row["labels"] = row["labels"] + add
+        changes.append({"number": row["number"], "repository": slug, "add": add})
+    if unknown:
+        print(f"warning: labels not in the repo, so not applied: {', '.join(sorted(unknown))}", file=sys.stderr)
+    return changes
 
 
 def write_linked_file(args, kind, number, rows, strict):
@@ -1771,16 +1908,17 @@ def write_linked_file(args, kind, number, rows, strict):
     have = {r["title"].casefold() for r in rows}
     pending = [(e["title"], e["section"], e["labels"]) for e in scan_issue_lines(old)
                if not e["url"] and e["title"].casefold() not in have] if old and kind == "issues" else []
-    text = render_issues(rows, number, args.owner, kind, pending)
     if old and f"Generated by kopi --export {kind}" not in old.splitlines()[0] and not args.force:
         if strict:
             raise GhError(f"{filename} exists and was not generated by kopi; use --force to overwrite it")
         return {"file": filename, "changed": False, "skipped": "not generated by kopi (use --force to overwrite it)"}
+    added = apply_linked_labels(args, kind, rows, old) if getattr(args, "apply_labels", False) and old else None
+    text = render_issues(rows, number, args.owner, kind, pending)
     changed = text != old
     if changed and not args.dry_run:
         with open(filename, "w") as f:
             f.write(text)
-    return {"file": filename, "changed": changed, "skipped": None}
+    return {"file": filename, "changed": changed, "skipped": None, **({"labels_added": added} if added is not None else {})}
 
 
 def _export_issues(args):
@@ -1796,10 +1934,13 @@ def _export_issues(args):
     if not project:
         raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
     rows = linked_rows(board_items(args, project["number"]), kind)
-    changed = write_linked_file(args, kind, project["number"], rows, strict=True)["changed"]
+    written = write_linked_file(args, kind, project["number"], rows, strict=True)
+    changed = written["changed"]
+    for c in written.get("labels_added", []):
+        say(args, f"{'would add' if args.dry_run else 'added'} label(s) {', '.join(c['add'])} to #{c['number']}")
     if args.json:
         emit(args, {"project": project["number"], "dry_run": bool(args.dry_run), "file": filename,
-                    "changed": changed, kind: rows})
+                    "changed": changed, kind: rows, **({"labels_added": written["labels_added"]} if "labels_added" in written else {})})
         return
     if args.dry_run:
         for r in rows:
@@ -1816,7 +1957,7 @@ def scan_issue_lines(text):
     """[{idx, title, url, number, section, labels}] for each bullet in ISSUES.md text, in file order.
 
     `idx` is the line index; `url` / `number` are None for entries with no link. Accepts kopi's own export lines
-    (`- [#3](url) Title (bug, docs)`, whose trailing parenthesis is the label list) and hand-written ones
+    (`- [#3](url) Title (bug, docs) @alice`, whose trailing parenthesis is the label list and `@names` the assignees) and hand-written ones
     (`- Title`, `- [ ] Title`, `- Title (labels: bug, docs)`). `section` is the nearest `## ` heading, or None.
     """
     entries, section = [], None
@@ -1829,6 +1970,8 @@ def scan_issue_lines(text):
             continue
         ref, url, title = m.group(1), m.group(2), m.group(3)
         labels = []
+        if url and (people := re.search(r"(\s+@[\w.-]+)+$", title)):   # kopi's export puts the assignees last
+            title = title[:people.start()]
         found = re.search(r"\s+\(([^()]*)\)$", title) if url else LABELS_SUFFIX.search(title)
         if found:
             labels = [l.strip() for l in found.group(1).split(",") if l.strip()]
@@ -2026,7 +2169,7 @@ def cmd_export(args):
     if not text.strip():
         text = TODO_TEMPLATE
     known = [t for _, t in parse_todo(text)]
-    changelog = [e for _, e in parse_changelog(_read("CHANGELOG.md"))] if status == "Done" else []
+    changelog = [e for _, e in parse_changelog(_read("CHANGELOG.md"), raw=True)] if status == "Done" else []
     new, skipped = [], 0  # [(entry text, url or None)]
     for item in items:
         if item.get("status") != status:
@@ -2280,6 +2423,66 @@ def status_counts(items):
     return work, counts
 
 
+TREND_MONTHS = 12
+
+
+def _stats(values):
+    """{n, median, mean, longest} of `values` (days), or None when there are none."""
+    if not values:
+        return None
+    return {"n": len(values), "median": statistics.median(values), "mean": round(statistics.mean(values), 1), "longest": max(values)}
+
+
+def _day(value):
+    try:
+        return datetime.date.fromisoformat(value[:10]) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def build_trends(items, release_dates, names, today, months=TREND_MONTHS):
+    """How fast work moves, from the board's date fields and the changelog's release dates.
+
+    {months: [{month, releases, completed}] (the last `months` calendar months, oldest first), cycle_days, release_interval_days}.
+    `completed` counts work items (not changelog entries) by their Completed date, `releases` the changelog versions by
+    release date (every version, even several on one day); `cycle_days` is Started to Completed for work items that have both, and `release_interval_days` the gap
+    between consecutive release days (both {n, median, mean, longest}, or None when there is nothing to measure)."""
+    keys = [f"{y:04d}-{m + 1:02d}" for y, m in (divmod(today.year * 12 + today.month - 1 - k, 12) for k in range(months - 1, -1, -1))]
+    completed, releases, spans = dict.fromkeys(keys, 0), dict.fromkeys(keys, 0), []
+    for item in items:
+        if CHANGELOG_TITLE.match(item["title"]):
+            continue
+        end, start = _day(item.get(names["completed"].lower())), _day(item.get(names["started"].lower()))
+        if end and end.strftime("%Y-%m") in completed:
+            completed[end.strftime("%Y-%m")] += 1
+        if end and start and end >= start:
+            spans.append((end - start).days)
+    versions = [d for d in map(_day, release_dates.values()) if d]
+    for d in versions:
+        if d.strftime("%Y-%m") in releases:
+            releases[d.strftime("%Y-%m")] += 1
+    days = sorted(set(versions))
+    return {"months": [{"month": k, "releases": releases[k], "completed": completed[k]} for k in keys],
+            "cycle_days": _stats(spans), "release_interval_days": _stats([(b - a).days for a, b in zip(days, days[1:])])}
+
+
+def build_milestones(items):
+    """[{title, due, done, total}] for the milestones of the board's issues and PRs, soonest due date first (no date last).
+
+    `due` is YYYY-MM-DD or None; an item counts as done when its board status is Done."""
+    found = {}
+    for item in items:
+        ms = item.get("milestone")
+        title = ms if isinstance(ms, str) else (ms or {}).get("title")
+        if not title:
+            continue
+        due = None if isinstance(ms, str) else (ms.get("dueOn") or "")[:10] or None
+        row = found.setdefault(title, {"title": title, "due": due, "done": 0, "total": 0})
+        row["total"] += 1
+        row["done"] += item.get("status") == "Done"
+    return sorted(found.values(), key=lambda m: (m["due"] is None, m["due"] or "", m["title"]))
+
+
 def build_report(args):
     """The data behind --report: counts by status, by kind of item, open work, recent releases and how far the
     board is from the files."""
@@ -2302,11 +2505,17 @@ def build_report(args):
                         "prs": kinds.count("PullRequest")},
             "in_progress": [i["title"] for i in work if i.get("status") == "In Progress"],
             "todo": [i["title"] for i in work if i.get("status") == "Todo"],
+            "milestones": build_milestones(items),
+            "trends": build_trends(items, changelog_release_dates(_read("CHANGELOG.md")), date_field_names(args), datetime.date.today()),
             "releases": changelog_releases(_read("CHANGELOG.md")), "differences": differences}
 
 
 def _n(count, noun):
     return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
+def _days(value):
+    return f"{value:g} day" + ("" if value == 1 else "s")
 
 
 def render_report(r, markdown=False):
@@ -2325,6 +2534,9 @@ def render_report(r, markdown=False):
     out.append("")
     t = r["by_type"]
     out += [h("Items"), f"{_n(t['drafts'], 'draft')}, {_n(t['issues'], 'issue')}, {_n(t['prs'], 'pull request')}", ""]
+    if r.get("milestones"):
+        out += [h("Milestones"), *(f"{bullet}{m['title']}: {m['done']} of {m['total']} done" + (f" (due {m['due']})" if m["due"] else "")
+                                   for m in r["milestones"]), ""]
     for title, names in (("In progress", r["in_progress"]), ("Todo", r["todo"])):
         if names:
             out += [h(f"{title} ({len(names)})"), *(f"{bullet}{n}" for n in names[:10]),
@@ -2332,6 +2544,19 @@ def render_report(r, markdown=False):
     if r["releases"]:
         out += [h("Recent releases"), *(f"{bullet}{x['version']}" + (f" ({x['date']})" if x["date"] else "")
                                         + f": {_n(x['entries'], 'entry').replace('entrys', 'entries')}" for x in r["releases"]), ""]
+    tr = r.get("trends") or {}
+    active = [m for m in tr.get("months", []) if m["releases"] or m["completed"]]
+    if active or tr.get("cycle_days") or tr.get("release_interval_days"):
+        out += [h(f"Trends (last {len(tr['months'])} months)"),
+                *(f"{bullet}{m['month']}: {_n(m['releases'], 'release')}, {m['completed']} work item"
+                  f"{'' if m['completed'] == 1 else 's'} completed" for m in active)]
+        if tr.get("cycle_days"):
+            s = tr["cycle_days"]
+            out.append(f"Cycle time (Started to Completed): median {_days(s['median'])}, mean {_days(s['mean'])}, longest {_days(s['longest'])} ({_n(s['n'], 'item')})")
+        if tr.get("release_interval_days"):
+            s = tr["release_interval_days"]
+            out.append(f"Between releases: median {_days(s['median'])}, mean {_days(s['mean'])}, longest {_days(s['longest'])} ({_n(s['n'], 'gap')})")
+        out.append("")
     d = r["differences"]
     out += [h("Board vs files"), "not compared (no CHANGELOG.md or TODO.md)" if d is None
             else "in sync" if d == 0 else f"{_n(d, 'difference')} (see --diff)"]
@@ -2611,7 +2836,8 @@ def gantt_tasks(items, view, args, today):
         for group in by_date.values():
             end = max(e["end"] for _, entries in group for e in entries)
             versions = [v for v, _ in group]
-            name = f"v{versions[0]}" if len(versions) == 1 else f"v{versions[0]} to v{versions[-1]} ({len(versions)} releases)"
+            first = versions[0] + (".x" if GROUP_VERSION.fullmatch(versions[0]) else "")   # a `[16.5]` group
+            name = f"v{first}" if len(versions) == 1 else f"v{versions[0]} to v{versions[-1]} ({len(versions)} releases)"
             tasks.append({"section": "Releases", "name": name, "state": "done", "end": end,
                           "start": min(e["start"] for _, entries in group for e in entries)})
     else:
@@ -3041,6 +3267,8 @@ def cmd_squash(args):
         print(f"{'tick' if args.dry_run else 'ticked'}\t{t['from']}\t{t['title']}")
     verb = "to tick" if args.dry_run else "ticked"
     print(("Dry run: " if args.dry_run else "") + f"{len(ticked)} TODO.md items {verb} (Done in project #{p.number})")
+    for c in (issues or {}).get("labels_added", []):
+        print(f"{'would add' if args.dry_run else 'added'} label(s) {', '.join(c['add'])} to #{c['number']}")
     if issues:
         f, n = issues["file"], issues["count"]
         print(("Dry run: " if args.dry_run else "")
@@ -3387,6 +3615,9 @@ def build_parser():
     p.add_argument("--close", metavar="ISSUE",
                    help="close one issue in the current repo: ISSUE is a number, an issue URL, or text matching "
                         "exactly one open issue's title")
+    p.add_argument("--apply-labels", action="store_true",
+                   help="with --export issues|prs, --squash or --sync: first add to GitHub the labels ISSUES.md / PRS.md lists for "
+                        "an issue / PR that lacks them (never removes labels), so a label added in the file is kept")
     p.add_argument("--check", action="store_true",
                    help="with --diff: exit with status 2 if the board and files differ (for CI / pre-commit)")
     p.add_argument("--restore", nargs="?", const=".", metavar="PATH",
@@ -3481,6 +3712,8 @@ def main(argv=None):
         parser.error("--yes only applies to --promote-all")
     if args.check and not args.diff:
         parser.error("--check only applies to --diff")
+    if args.apply_labels and not (args.export in LINKED_EXPORTS or args.squash or args.sync):
+        parser.error("--apply-labels only applies to --export issues|prs, --squash and --sync")
     if args.all and not args.restore:
         parser.error("--all only applies to --restore")
     if args.local and not (args.list or args.open or args.reopen or args.close):

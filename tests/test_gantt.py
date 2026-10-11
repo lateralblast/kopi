@@ -175,3 +175,11 @@ def test_same_day_releases_are_ordered_by_version_number_not_text():
     board.append(rel("1.2.0", "2026-09-03"))
     tasks, _ = cli.gantt_tasks(board, "releases", mock_args, TODAY)
     assert [t["name"] for t in tasks] == ["v1.0.9 to v1.0.11 (3 releases)", "v1.1.0", "v1.2.0"]
+
+
+def test_grouped_changelog_items_are_named_by_their_minor_version():
+    items = [{"title": "[2.1] Releases 2.1.x", "status": "Done", "started": "2026-02-01", "completed": "2026-03-03", "content": {}},
+             {"title": "[2.0] Releases 2.0.x", "status": "Done", "started": "2026-01-01", "completed": "2026-02-01", "content": {}},
+             {"title": "[1.9] Releases 1.9.x", "status": "Done", "started": "2025-12-01", "completed": "2026-01-01", "content": {}}]
+    tasks, _ = cli.gantt_tasks(items, "releases", mock.Mock(config_data={}), datetime.date(2026, 10, 12))
+    assert [t["name"] for t in tasks] == ["v1.9.x", "v2.0.x", "v2.1.x"]

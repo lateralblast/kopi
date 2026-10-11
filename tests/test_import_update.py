@@ -252,20 +252,20 @@ def test_file_argument_errors(tmp_path, capsys):
 
 
 def test_import_creates_items_and_statuses_in_batches(capsys):
-    todo = "".join(f"- [ ] Task number {n} about topic{n}\n" for n in range(45))
+    todo = "".join(f"- [ ] Task number {n} about topic{n}\n" for n in range(120))
     gql = FakeGraphql()
     with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="x"), mock.patch("kopi.graphql", gql), \
          mock.patch("kopi.ensure_project", return_value=(2, False)), mock.patch("kopi.fetch_linked", return_value=[]), \
          mock.patch("kopi._read", side_effect=lambda p: "" if p == "CHANGELOG.md" else todo), \
          mock.patch("kopi.run_json", side_effect=_import_mocks([])), mock.patch("kopi.run") as run:
         assert cli.main(["--import"]) == 0
-    assert len(gql.created) == 45 and len(gql.statuses) == 45 and not run.called
+    assert len(gql.created) == 120 and len(gql.statuses) == 120 and not run.called
     mutations = [q for q in gql.queries if q.startswith("mutation")]
-    assert len(mutations) == 3 + 3                                    # 45 creates and 45 statuses, 20 per request
+    assert len(mutations) == 3 + 3                                    # 120 creates and 120 statuses, 50 per request
     err = capsys.readouterr().err
-    assert "Importing 45 items into project #2" in err and "Creating 45 draft items..." in err
-    assert "  created 20/45" in err and "  created 45/45" in err and "Setting 45 statuses..." in err and "  set 45/45" in err
-    assert "Waiting for GitHub to list the 45 new items..." in err
+    assert "Importing 120 items into project #2" in err and "Creating 120 draft items..." in err
+    assert "  created 50/120" in err and "  created 120/120" in err and "Setting 120 statuses..." in err and "  set 120/120" in err
+    assert "Waiting for GitHub to list the 120 new items..." in err
 
 
 def test_progress_goes_to_stderr_and_not_under_json(capsys):
@@ -376,3 +376,44 @@ def test_import_waits_on_the_item_count_not_by_listing_the_board_again(capsys):
     lists = [c for c in rj.call_args_list if c.args[1] == "item-list"]
     assert len(lists) == 1 and "1" in lists[0].args           # only the "is the project empty" check, with --limit 1
     assert any("totalCount" in q for q in gql.queries)
+
+
+def _parts(n):
+    return [f"updateProjectV2ItemFieldValue(input: {{n: {i}}}) {{ projectV2Item {{ id }} }}" for i in range(n)]
+
+
+def _echo(query, **_):
+    import re
+    return {"data": {f"a{n}": {"op": int(i)} for n, i in re.findall(r"a(\d+): \w+\(input: \{n: (\d+)", query)}}
+
+
+def test_repeatable_writes_run_in_parallel_and_keep_their_order(capsys):
+    with mock.patch("kopi.graphql", side_effect=_echo) as gql:
+        out = cli.mutate_batched(mock.Mock(json=False), _parts(170), "set", repeatable=True)
+    assert [r["op"] for r in out] == list(range(170)) and gql.call_count == 4         # 50 + 50 + 50 + 20
+    assert "  set 170/170" in capsys.readouterr().err
+
+
+def test_a_failed_parallel_request_is_retried_on_its_own():
+    calls = {"n": 0}
+
+    def flaky(query, **kw):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise cli.GhError("gh: Something went wrong while executing your query")
+        return _echo(query)
+    with mock.patch("kopi.graphql", side_effect=flaky):
+        out = cli.mutate_batched(mock.Mock(json=True), _parts(120), "set", repeatable=True)
+    assert [r["op"] for r in out] == list(range(120)) and calls["n"] == 4              # 3 requests, one retried
+
+
+def test_a_request_that_keeps_failing_still_raises():
+    with mock.patch("kopi.graphql", side_effect=cli.GhError("down")), pytest.raises(cli.GhError, match="down"):
+        cli.mutate_batched(mock.Mock(json=True), _parts(120), "set", repeatable=True)
+
+
+def test_creating_items_is_never_parallel_or_retried():
+    """A failed create may have partly applied, so repeating it would duplicate items."""
+    with mock.patch("kopi.graphql", side_effect=cli.GhError("down")) as gql, pytest.raises(cli.GhError):
+        cli.mutate_batched(mock.Mock(json=True), _parts(120), "created")
+    assert gql.call_count == 1

@@ -76,3 +76,19 @@ def test_an_item_with_too_many_field_values_falls_back_to_gh(lean, capsys):
     with mock.patch("kopi.run_json", side_effect=[{"id": "PVT_1"}, {"items": []}]):
         assert cli.board_items(ARGS, 7) == []
     assert "more than 12 field values" in capsys.readouterr().err
+
+
+def test_lean_items_carry_assignees(lean):
+    issue = {"__typename": "Issue", "title": "Bug", "body": "", "url": "https://github.com/o/r/issues/4", "number": 4,
+             "repository": {"nameWithOwner": "o/r"}, "labels": {"nodes": []}, "assignees": {"nodes": [{"login": "alice"}]}}
+    lean.return_value = _page([_node("I2", "Bug", content=issue)])
+    assert cli.board_items(ARGS, 7)[0]["assignees"] == ["alice"]
+
+
+def test_lean_items_carry_the_milestone(lean):
+    issue = {"__typename": "Issue", "title": "Bug", "body": "", "url": "https://github.com/o/r/issues/4", "number": 4,
+             "repository": {"nameWithOwner": "o/r"}, "labels": {"nodes": []}, "milestone": {"title": "v2.0", "dueOn": "2026-12-01T00:00:00Z"}}
+    plain = dict(issue, number=5, url="https://github.com/o/r/issues/5", milestone=None)
+    lean.return_value = _page([_node("I2", "Bug", content=issue), _node("I3", "Plain", content=plain)])
+    first, second = cli.board_items(ARGS, 7)
+    assert first["milestone"] == {"title": "v2.0", "dueOn": "2026-12-01T00:00:00Z"} and "milestone" not in second

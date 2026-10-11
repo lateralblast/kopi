@@ -389,3 +389,110 @@ def test_rate_limit_hint_gives_the_reset_time_even_when_some_budget_is_left():
     with mock.patch("kopi.subprocess.run", side_effect=[limited, answer]), pytest.raises(cli.GhError) as exc:
         cli.run("project", "item-list", "1")
     assert "resets at 13:01 UTC" in str(exc.value)
+
+
+WINDOW_CHANGELOG = """# Changelog
+
+## [Unreleased]
+- Not shipped yet
+
+## [3.0.0] - 2026-03-01
+- Three
+
+## [2.1.0] - 2026-02-01
+- Two point one a
+- Two point one b
+
+## [2.0.0] - 2026-01-01
+- Two
+
+## [1.0.0] - 2025-12-01
+- One
+"""
+
+
+def test_changelog_window_last_keeps_the_newest_releases_and_unreleased():
+    cli.CHANGELOG_WINDOW.update(last=2)
+    assert cli.parse_changelog(WINDOW_CHANGELOG) == [("Unreleased", "Not shipped yet"), ("3.0.0", "Three"),
+                                                      ("2.1.0", "Two point one a"), ("2.1.0", "Two point one b")]
+
+
+def test_changelog_window_since_keeps_versions_at_or_above_it():
+    cli.CHANGELOG_WINDOW.update(since="2.1")
+    assert [v for v, _ in cli.parse_changelog(WINDOW_CHANGELOG)] == ["Unreleased", "3.0.0", "2.1.0", "2.1.0"]
+    cli.CHANGELOG_WINDOW.update(last=1)                       # both limits apply
+    assert [v for v, _ in cli.parse_changelog(WINDOW_CHANGELOG)] == ["Unreleased", "3.0.0"]
+
+
+def test_no_window_means_the_whole_changelog():
+    assert len(cli.parse_changelog(WINDOW_CHANGELOG)) == 6
+
+
+def test_changelog_window_comes_from_kopi_toml_and_is_validated(tmp_path):
+    cfg = tmp_path / ".kopi.toml"
+    cfg.write_text('[changelog]\nlast = 3\nsince = "16.0.0"\n')
+    args = mock.Mock(status_map=None, code_comments=False, releases=False)
+    cli.apply_config(args, cli.load_config(str(cfg)))
+    assert cli.CHANGELOG_WINDOW == {"last": 3, "since": "16.0.0"}
+    cli.apply_config(args, {})
+    assert cli.CHANGELOG_WINDOW == {}                          # the next directory (--rollup) starts clean
+    for bad, message in (("last = 0", "changelog.last"), ("last = true", "changelog.last"), ('last = "3"', "must be a int"),
+                         ('since = "v16"', "changelog.since"), ("since = 16", "must be a str")):
+        cfg.write_text(f"[changelog]\n{bad}\n")
+        with pytest.raises(cli.GhError, match=message):
+            cli.load_config(str(cfg))
+
+
+GROUP_CHANGELOG = """# Changelog
+
+## [Unreleased]
+- Not shipped yet
+
+## [2.1.2] - 2026-03-03
+- Two one two
+
+## [2.1.1] - 2026-03-02
+- Two one one a
+- Two one one b
+
+## [2.1.0] - 2026-03-01
+- Two one
+
+## [2.0.0] - 2026-02-01
+- Two
+
+## [2.0.0-rc1] - 2026-01-15
+- A release candidate
+"""
+
+
+def test_group_minor_collapses_each_major_minor_to_one_entry():
+    cli.CHANGELOG_WINDOW.update(group="minor")
+    assert cli.parse_changelog(GROUP_CHANGELOG) == [
+        ("Unreleased", "Not shipped yet"), ("2.1", "Releases 2.1.x"), ("2.0", "Releases 2.0.x"), ("2.0.0-rc1", "A release candidate")]
+    assert len(cli.parse_changelog(GROUP_CHANGELOG, raw=True)) == 7                 # the bullets themselves are still there
+    cli.CHANGELOG_WINDOW.clear()
+    assert len(cli.parse_changelog(GROUP_CHANGELOG)) == 7                           # off by default
+
+
+def test_group_applies_after_the_window():
+    cli.CHANGELOG_WINDOW.update(group="minor", last=2)                              # the newest two releases: 2.1.2 and 2.1.1
+    assert [v for v, _ in cli.parse_changelog(GROUP_CHANGELOG)] == ["Unreleased", "2.1"]
+
+
+def test_grouped_plan_has_one_stable_title_and_a_body_listing_the_bullets():
+    cli.CHANGELOG_WINDOW.update(group="minor")
+    plan, _ = cli.build_plan(GROUP_CHANGELOG, "- [x] Two one two done in TODO too\n")
+    done = [(t, b) for _, t, b in plan if t.startswith("[2.")]
+    assert [t for t, _ in done] == ["[2.0.0-rc1] A release candidate", "[2.0] Releases 2.0.x", "[2.1] Releases 2.1.x"]   # oldest first
+    assert done[2][1] == "- 2.1.2: Two one two\n- 2.1.1: Two one one a\n- 2.1.1: Two one one b\n- 2.1.0: Two one"
+    assert not any("done in TODO too" in t for _, t, _ in plan)                      # still skipped as a changelog duplicate
+
+
+def test_group_setting_is_validated(tmp_path):
+    cfg = tmp_path / ".kopi.toml"
+    cfg.write_text('[changelog]\ngroup = "minor"\n')
+    assert cli.load_config(str(cfg))["changelog"] == {"group": "minor"}
+    cfg.write_text('[changelog]\ngroup = "major"\n')
+    with pytest.raises(cli.GhError, match='changelog.group must be "minor"'):
+        cli.load_config(str(cfg))

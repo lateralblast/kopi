@@ -119,3 +119,22 @@ def test_diff_and_report_do_not_warn_about_similar_todos(tmp_path, monkeypatch, 
     assert "possible duplicate" not in capsys.readouterr().err
     _run_update(board, argv=("--update", "--dry-run"), todo=todo)
     assert "possible duplicate TODO.md entries" in capsys.readouterr().err
+
+
+def test_entries_outside_the_changelog_window_are_not_orphans(capsys):
+    board = SETTLED + [{"id": "Z", "title": "Something nobody tracks", "status": "Todo"}]
+    with mock.patch("kopi.load_config", return_value={"changelog": {"since": "0.0.2"}}):
+        rc, _, _ = _run_update(board, argv=("--json", "--diff"))
+    data, _ = _json_out(capsys)
+    titles = [i["title"] for i in data["board_only"]]
+    assert titles == ["Something nobody tracks"]                      # [0.0.1] is outside the window, so it is not board-only
+
+
+def test_ci_example_workflow_runs_the_documented_check():
+    """docs/kopi-check.yml and the README's CI section must keep naming the command and the token the check needs."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    workflow = open(os.path.join(root, "docs", "kopi-check.yml")).read()
+    assert "run: kopi --diff --check" in workflow and "GH_TOKEN: ${{ secrets.KOPI_TOKEN }}" in workflow
+    assert workflow.count("name: kopi") == 1 and "pull_request:" in workflow
+    readme = open(os.path.join(root, "README.md")).read()
+    assert "docs/kopi-check.yml" in readme and "entry: kopi --diff --check" in readme

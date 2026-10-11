@@ -29,3 +29,12 @@ def gh_item_list():
     slim GraphQL read back on."""
     with mock.patch("kopi.LEAN_READS", False):
         yield
+
+
+@pytest.fixture(autouse=True)
+def no_changelog_window():
+    """A [changelog] window set by one test must not cut the changelog in the next."""
+    import kopi
+    kopi.CHANGELOG_WINDOW.clear()
+    yield
+    kopi.CHANGELOG_WINDOW.clear()

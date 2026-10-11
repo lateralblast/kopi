@@ -7,6 +7,13 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] Group a long changelog by minor version: `[changelog] group = "minor"` (one `[16.5] Releases 16.5.x` item per minor with a bullet-list body and a date span), with tests; verified live on a scratch board (6 groups, idempotent, `--diff` clean).
+- [x] Milestones: read with the board items and shown per milestone (done of total, due date) in `--report` and `--json`, with tests. Read-only; the live query was checked but no real milestone was available to confirm the output.
+- [x] `--report` trends: releases and completed work items per month, cycle time and the gap between releases, with tests.
+- [x] CI recipe for `--diff --check`: `docs/kopi-check.yml` example workflow, README section and pre-commit hook, with a test that the example stays in step with the docs. Not run on a real Actions runner.
+- [x] Labels and assignees: assignees shown in `ISSUES.md` / `PRS.md`, and `--apply-labels` adds labels listed in the file to GitHub (additive only; assignees are not written back), with tests.
+- [x] Limit a long changelog on import: `[changelog] last` / `since` in `.kopi.toml`, with out-of-window board items not reported as orphans, and tests. Grouping by minor version was considered and not built (see below).
+- [x] Faster imports: 50 mutations per request, with the repeatable Status / date / section writes three requests at once and a retry for a failed one (ocicat import 2:12 to 1:19; item creation, now the bulk of the time, stays sequential), with tests.
 - [x] Cheaper board reads: a slim GraphQL query replaces `gh project item-list` (0.02 against 1 point per item), with a `gh` fallback and tests.
 - [x] Delete the test boards created while importing other repos (#10, #12, #13, #14, #16, #17, #18 on lateralblast).
 - [x] Fixes from importing `lunar` (1,631 entries, 22 issues, 40 PRs): measured the real read cost (about 1 point per item with date fields) and corrected the docs and hints, and the rate-limit hint gives the reset time when some budget is left, with a test.

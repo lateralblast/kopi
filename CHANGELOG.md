@@ -7,6 +7,45 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.1.8] - 2026-10-12
+
+### Added
+- `[changelog] group = "minor"` in `.kopi.toml` turns each `MAJOR.MINOR` of a long changelog into one board item (`[16.5] Releases 16.5.x`) instead of one per bullet. The body lists that minor's bullets, Started / Completed span its releases (from the release before it to its last), and `--gantt` draws `v16.5.x` bars. The title is stable, so `--update` does not re-add it. It works with `last` / `since` (the window applies first), leaves `Unreleased` and non-`X.Y.Z` versions per-bullet, and leaves existing per-version items on the board alone.
+
+### Changed
+- Board titles of the form `[16.5]` (no patch number) are recognised as changelog entries everywhere (dates, `--gantt`, `--report`, `--archive`, `--export`, `--promote`).
+
+## [1.1.7] - 2026-10-12
+
+### Added
+- `--report` lists the milestones of the board's issues and PRs with how many of their items are Done and the due date (`Milestones:  - v2.0: 3 of 5 done (due 2026-12-01)`), soonest first, and `--json` gains `milestones: [{title, due, done, total}]`. Boards read through the slim query now carry each item's `milestone`. Read-only: the board's native Milestone field already shows them.
+
+## [1.1.6] - 2026-10-12
+
+### Added
+- `--report` shows trends: for each of the last 12 months the changelog versions released and the work items completed, the cycle time (Started to Completed: median, mean, longest) of work items that have both dates, and the gap between release days (`Trends (last 12 months):`, `Cycle time ...`, `Between releases ...`). It uses the board's date fields (named by `[dates]` when set) and the changelog's release dates, costs no extra API reads, and is left out when there is nothing to measure. `--json` gains `trends`.
+
+## [1.1.5] - 2026-10-12
+
+### Added
+- A CI recipe for `kopi --diff --check`: `docs/kopi-check.yml` is an example GitHub Actions workflow (pull requests touching `CHANGELOG.md` / `TODO.md`, plus weekly) and the README has a "Gating CI" section with the token it needs (the built-in `GITHUB_TOKEN` cannot read Projects) and a pre-commit hook.
+
+## [1.1.4] - 2026-10-12
+
+### Added
+- `ISSUES.md` and `PRS.md` show each issue's or PR's assignees as `@login`s after its labels (`- [#3](url) Title (bug, docs) @alice`), and the `--export issues|prs` JSON rows gain `assignees`. Boards read through the slim query now carry assignees, and the file still reads back (the `@names` are ignored when matching).
+- `--apply-labels` with `--export issues|prs`, `--squash` or `--sync`: labels listed in `ISSUES.md` / `PRS.md` for an issue or PR that lacks them are added on GitHub before the file is rewritten, so a label typed into the file is kept. It never removes labels, warns about (and does not create) labels the repo lacks, and `--dry-run` only reports (`labels_added` in `--json`).
+
+## [1.1.3] - 2026-10-12
+
+### Added
+- `[changelog]` in `.kopi.toml` tracks only part of a very long `CHANGELOG.md`: `last = 50` takes the newest 50 releases, `since = "16.0.0"` takes releases from that version up (both may be set; `Unreleased` entries are always kept). A repo like `lunar` (1,571 versions) can then have a board of the recent ones. Board items for older versions that are already there are left alone, and `--diff` / `--archive` no longer report them as `board-only` or orphans. Invalid values are rejected with a message.
+
+## [1.1.2] - 2026-10-12
+
+### Changed
+- `--import` and `--update` write faster. Mutations go 50 to a request instead of 20, and the Status, date and section writes (which are safe to repeat) run three requests at once; a request that fails is retried on its own. Item creation stays one request at a time, because repeating a failed create could duplicate items. Measured on GitHub: 300 status writes took 45 s before and 11-18 s now, and importing `ocicat` (210 items) went from 2:12 to 1:19. Four parallel requests made GitHub answer "something went wrong", so three is the limit.
+
 ## [1.1.1] - 2026-10-12
 
 ### Changed

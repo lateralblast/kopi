@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 1.1.1
+Version: 1.1.8
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -54,7 +54,7 @@ cd ~/code/my-repo
 
 # Board to files
 ./kopi.py --export todo|inprogress|done [--dry-run]          # add the board's items to TODO.md as [ ] / [~] / [x] entries
-./kopi.py --export issues [--dry-run] [--force]              # write the board's issues to ISSUES.md
+./kopi.py --export issues [--dry-run] [--force] [--apply-labels]  # write the board's issues to ISSUES.md (--apply-labels: first add the file's extra labels on GitHub)
 ./kopi.py --export prs [--dry-run] [--force]                 # write the board's pull requests to PRS.md
 ./kopi.py --squash [PATH] [--dry-run] [--force]              # tick TODO.md entries that are Done on the board; refresh ISSUES.md
 ./kopi.py --import issues [--dry-run]                        # create a GitHub issue for each ISSUES.md entry that has none
@@ -134,6 +134,11 @@ enabled = true                # false: never create or fill the date fields
 [release]                     # for --release
 tag_prefix = "v"              # tag = prefix + changelog version (v1.2.3); --tag TAG still wins
 
+[changelog]                   # for a very long CHANGELOG.md: track only part of it
+last = 50                     # the newest 50 releases that have entries
+since = "16.0.0"              # and/or only releases from this version up
+group = "minor"               # one item per MAJOR.MINOR instead of one per bullet
+
 [sections]                    # opt-in: a text field holding the TODO.md heading each item sat under
 enabled = true
 field = "Section"             # the field's name (this is the default)
@@ -146,6 +151,8 @@ exclude = ["*_generated.py"]  # in addition to the built-in exclusions
 
 - `project` is the title kopi looks for and, for `--init` / `--import`, creates.
 - `[release] tag_prefix` is put before the changelog version to name the tag `--release` creates (`v` gives `v1.2.3`); without it the tag is the plain version number. An explicit `--tag` is used as typed.
+- `[changelog] last = N` and `since = "X.Y.Z"` (either or both) track only the newest N releases, and/or those from that version up, so a repo with over a thousand versions gets a board of the recent ones (`last` counts releases that have entries; `Unreleased` entries are always kept). It applies to every command that reads `CHANGELOG.md`: `--import` and `--update` add only those entries, and board items for older versions that are already there are left alone, not reported as `board-only` by `--diff` and not archived. Without it the whole file is tracked.
+- `[changelog] group = "minor"` makes each `MAJOR.MINOR` one board item instead of one per bullet: `[16.5] Releases 16.5.x`, whose body lists that minor's bullets newest first (`- 16.5.9: text`), with Started the date of the release before the group and Completed its last release, so the Roadmap and `--gantt` show `v16.5.x` bars. It suits repos like one with 1,500 single-bullet versions. The title is stable, so `--update` never re-adds it; but an item's body is written when it is created, so a minor that is still growing keeps its first body (the file stays the record). `Unreleased` and versions that are not plain `X.Y.Z` (such as `2.0.0-rc1`) are left per-bullet. It combines with `last` / `since` (the window applies first). Turning it on for an existing board adds the group items and leaves the old per-version items alone (`--diff` does not report them); `--report`'s release count then counts groups.
 - `[sections] enabled = true` makes `--import` / `--update` create a **Section** text field and fill it with the `##` heading each `TODO.md` entry sits under, so the board can be grouped by it. Existing values are never overwritten, changelog entries get none, and it is off by default.
 - `repos` is described under [`--rollup`](#roll-up-across-projects---rollup), `[sources]` and `[comments]` under [extra sources](#extra-sources---code-comments---releases).
 - Unknown settings are ignored with a warning on stderr, so a typo is visible; a value of the wrong type is an error.
@@ -174,20 +181,20 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--import` and `--update`: `{project, dry_run, added: [{status, title, url?}], moved: [{title, from, to}]}` (`--import` reports `items`, `skipped` on a dry run and `imported` otherwise).
 - `--diff`: `{project, files_only, github_only, board_only, duplicates, behind, ahead, in_sync}`.
 - `--sync`: `{project, dry_run, update, squash}` (the `--update` and `--squash` results).
-- `--export todo|inprogress|done`: `{project, dry_run, file, added, already_present}`; `--export issues` / `prs`: `{project, dry_run, file, changed, issues|prs}`; `--import issues`: `{repo, dry_run, created: [{title, url?, closed, labels}], existing, unknown_labels}`.
+- `--export todo|inprogress|done`: `{project, dry_run, file, added, already_present}`; `--export issues` / `prs`: `{project, dry_run, file, changed, issues|prs: [{status, number, repository, title, url, labels, assignees}]}` plus `labels_added: [{number, repository, add}]` under `--apply-labels` (`--squash` carries it in its `issues` object); `--import issues`: `{repo, dry_run, created: [{title, url?, closed, labels}], existing, unknown_labels}`.
 - `--squash`: `{project, dry_run, ticked: [{title, from}], issues: {file, changed, skipped, count} | null}`.
 - `--list`: an array of items, as under [`--list`](#listing-items---list); `--list releases`: `[{tag, name, date, latest, draft, prerelease, url}]` (with `--local`: `[{version, date, entries}]`).
 - `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--open`: `{project, repo, dry_run, created: {title, url, number, item_id} | null}` (with `--local`: `{file, dry_run, created: {title, labels}}`); `--close`: `{repo, dry_run, closed: [{number, title, url}]}` (with `--local`: `{file, dry_run, closed: [{title, number?, url?}]}`); `--reopen`: `{repo, dry_run, reopened: [{number, title, url}], board: {project?, action}}` (`action` is `moved`, `added`, `unchanged` or `skipped`); `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}], annotated?}`; `--promote-all`: the same plus `failed: [{title, id, error}]`; `annotated` (with `--annotate`) is `[{title, number, entry}]`.
 - `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--dedupe`: `{project, dry_run, deleted}`.
 - `--import`, `--update`, `--done`, `--start` and `--move` also report `dates: [{title, field, date}]` when they set any; `--import` and `--update` likewise report `sections: [{title, section}]` when `[sections]` is on and values were set. `--setup-dates`: `{project, dry_run, created: [{field}], existing: [{field, type}]}`; `--backfill-dates`: `{project, dry_run, set: [{title, field, date}]}`.
 - `--gantt`: `{project, view, file, dry_run, changed, skipped, tasks: [{section, name, start, end, state}]}`; `--release`: `{repo, tag, target, subject, dry_run, draft, notes: "changelog" | "generated", existing, url}`; `--checkquota`: `{limit, remaining, used, reset_at, reset_in_minutes, low}`; `--delete release`: `{repo, tag, url, draft, dry_run, deleted, tag_deleted}` (`url` is null and `deleted` false when only a tag was deleted).
-- `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, history: {entries, releases}, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
+- `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, history: {entries, releases}, milestones: [{title, due, done, total}], trends: {months: [{month, releases, completed}], cycle_days, release_interval_days}, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
 
 ### Limits
 
 ### Speed and progress
 
-`--import` and `--update` write in batches: items are created, linked issues and PRs are added, and Status and date values are set 20 at a time in single GraphQL requests, so even a long history imports in under a minute (a 51-item repo took 52 seconds). While they work they print progress on stderr, for example:
+`--import` and `--update` write in batches: items are created, linked issues and PRs are added, and Status and date values are written 50 at a time in single GraphQL requests (Status, date and section writes three requests at once; item creation one at a time, because repeating a failed create would duplicate items), so even a long history imports in under a minute (a 51-item repo took 52 seconds). While they work they print progress on stderr, for example:
 
 ```
 Importing 51 items into project #7
@@ -207,7 +214,7 @@ Progress is never printed with `--json`, so a script's stderr stays quiet as wel
 
 `kopi` reads up to 1000 projects, 5000 board items and 5000 issues (and, separately, PRs) per repo. `gh` pages through results, so these are effectively "everything" for normal boards. If a lookup reaches its cap, `kopi` prints a warning on stderr rather than silently dropping the rest.
 
-**API budget.** GitHub allows 5000 GraphQL points an hour. Writes are cheap (kopi batches 20 into one request, about a point each), but reading the board used to be costly: `gh project item-list` costs about 1 point per item (1,520 for a 1,631-item board with dates). kopi now reads boards with its own slim GraphQL query, about 0.02 points per item (32 points for the same board, in about 20 seconds), and quietly falls back to `gh project item-list` (with a warning) if that query fails or an item has more than 12 field values; the fallback is what the per-item cost applies to. `--update`, `--diff`, `--report` and `--sync` each read the board at least once (`--report` reads it once, not twice). Even so, a very large board imported repeatedly can use up the hour. When the budget runs out kopi says when it resets (`resets at 10:39 UTC (in 4 min)`); an `--import` that hits the limit only after its writes has still imported everything, so run `--diff` after the reset to check. `kopi --checkquota` shows what is left (`GraphQL quota: 755 of 5000 points left (4245 used); resets at 10:39 UTC (in 12 min)`, with a warning below 10%, and `--json` gives `{limit, remaining, used, reset_at, reset_in_minutes, low}`); it costs one point and needs no project or repo. Check it before a large `--import`, `--update` or `--report`.
+**API budget.** GitHub allows 5000 GraphQL points an hour. Writes are cheap (kopi batches 50 into one request, about a point each), but reading the board used to be costly: `gh project item-list` costs about 1 point per item (1,520 for a 1,631-item board with dates). kopi now reads boards with its own slim GraphQL query, about 0.02 points per item (32 points for the same board, in about 20 seconds), and quietly falls back to `gh project item-list` (with a warning) if that query fails or an item has more than 12 field values; the fallback is what the per-item cost applies to. `--update`, `--diff`, `--report` and `--sync` each read the board at least once (`--report` reads it once, not twice). Even so, a very large board imported repeatedly can use up the hour. When the budget runs out kopi says when it resets (`resets at 10:39 UTC (in 4 min)`); an `--import` that hits the limit only after its writes has still imported everything, so run `--diff` after the reset to check. `kopi --checkquota` shows what is left (`GraphQL quota: 755 of 5000 points left (4245 used); resets at 10:39 UTC (in 12 min)`, with a warning below 10%, and `--json` gives `{limit, remaining, used, reset_at, reset_in_minutes, low}`); it costs one point and needs no project or repo. Check it before a large `--import`, `--update` or `--report`.
 
 ## Projects
 
@@ -271,6 +278,27 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 
 Add `--check` to use it as a gate in CI or a pre-commit hook: the exit status is 0 when there are no differences and **2** when there are (1 stays reserved for errors such as a missing project or `gh` failure). The report is printed either way, and `--json` includes `in_sync`.
 
+### Gating CI on it (`--diff --check`)
+
+`kopi --diff --check` only reads, costs a few API points (the board is read with one slim query) and exits 0 when the board and files agree and 2 when they do not, so it can fail a pull request or a push.
+
+- **GitHub Actions.** [`docs/kopi-check.yml`](docs/kopi-check.yml) is a ready workflow: it installs kopi with pip, and runs `kopi --diff --check` on pull requests that touch `CHANGELOG.md` or `TODO.md`, and weekly. It needs a repository secret holding a token that can read your Projects (a classic personal access token with `project` and `repo`, or a fine-grained one with Projects read), passed as `GH_TOKEN`; the built-in `GITHUB_TOKEN` cannot read user or organisation Projects. `gh` takes the token from the environment, so no `gh auth login` step is needed.
+- **pre-commit.** Run it before a commit that touches the files, with a local hook in `.pre-commit-config.yaml`:
+
+  ```yaml
+  repos:
+    - repo: local
+      hooks:
+        - id: kopi-in-sync
+          name: kopi --diff --check
+          entry: kopi --diff --check
+          language: system
+          pass_filenames: false
+          files: ^(CHANGELOG|TODO)\.md$
+  ```
+
+- **Fixing a failure.** The report lists what differs (`files-only`, `github-only`, `board-only`, `behind`, `ahead`, `duplicate`); `kopi --sync` brings the board and files together, or `--diff --json` gives `in_sync` and the lists to a script.
+
 ### Syncing both ways (`--sync`)
 
 `kopi --sync [PATH]` runs `--update` and then `--squash`: anything in `CHANGELOG.md`, `TODO.md`, issues and PRs that the board lacks (or is behind on) goes into the board, then `TODO.md` entries that are Done on the board are ticked and `ISSUES.md` is refreshed if the project has issues. Use `--dry-run` to preview both steps; the squash step is then planned from the board as it is now, before `--update`'s changes would land. With `--json` the two results are one document, `{project, dry_run, update, squash}`. It takes a directory like `--update`, but not a single file. The `--export` modes stay separate because they write new entries and files; run them yourself when you want them.
@@ -324,10 +352,11 @@ By default `--import` and `--update` process both `CHANGELOG.md` and `TODO.md`, 
 
 ### Issues and PRs
 
-**Exporting issues to ISSUES.md (`--export issues`).** `kopi --export issues` creates or updates `ISSUES.md` (`--squash` and `--sync` do the same whenever the project has issues). It writes the project's **issue** items to `ISSUES.md` in the current directory, as a snapshot grouped by board status (Todo, In Progress, Done, then No status), one bullet per issue: `- [#3](url) Title (labels)`. The reference includes the repository (`owner/repo#3`) when the board holds issues from more than one repo. Pull requests and draft items are not included, and the board's status is used, not the issue's open/closed state on GitHub.
+**Exporting issues to ISSUES.md (`--export issues`).** `kopi --export issues` creates or updates `ISSUES.md` (`--squash` and `--sync` do the same whenever the project has issues). It writes the project's **issue** items to `ISSUES.md` in the current directory, as a snapshot grouped by board status (Todo, In Progress, Done, then No status), one bullet per issue: `- [#3](url) Title (labels) @assignee`. The reference includes the repository (`owner/repo#3`) when the board holds issues from more than one repo. Pull requests and draft items are not included, and the board's status is used, not the issue's open/closed state on GitHub.
 
 - Unlike the `TODO.md` exports, which only add what's missing, this **replaces** `ISSUES.md` each time, so it is always an exact picture of the board, except that entries with no link (added with `--open --local`) are kept until a board issue with the same title exists. The file starts with a comment line saying so. A file without that line (one you wrote by hand) is never overwritten unless you pass `--force`. Delete the comment line yourself to take over a generated file.
 - If nothing changed the file is left alone ("ISSUES.md is up to date"). `--dry-run` lists the issues without writing.
+- **Labels and assignees.** Each bullet carries the issue's labels in parentheses and its assignees as `@login`s after them. Labels also go the other way, but only when you ask: `--apply-labels` (with `--export issues|prs`, `--squash` or `--sync`) first adds to GitHub every label the existing file lists for an issue that lacks it, so a label you typed into `ISSUES.md` is kept instead of overwritten, and the rewritten file shows the union. It never removes a label (one missing from the file may just have been added on GitHub since), labels the repo does not have are warned about and not created, and `--dry-run` only reports. Assignees are shown, never written back.
 - The board is not changed. Whether `ISSUES.md` belongs in your repository (or in `.gitignore`) is up to you.
 
 **Exporting pull requests to PRS.md (`--export prs`).** It works exactly like `--export issues` but for the board's **pull request** items, writing `PRS.md` (`- [#8](url) Title`, grouped by board status). The same rules apply: the file is replaced each time, and a `PRS.md` kopi did not generate needs `--force`. There is no `--import prs`: a pull request needs a branch and commits, so it cannot be created from a line of text.
@@ -458,7 +487,7 @@ Where each date comes from:
 - **Started defaults to the previous release.** With nothing better known, work is taken to have started when the previous changelog release shipped, so a release's Roadmap bar spans from the one before it. Releases on the same day give a one-day marker.
 - **Nothing is overwritten.** A date already on an item, including one you typed in, is kept; only empty fields are filled.
 - Open items get no Completed date, and In Progress items get Started only from `--start`.
-- Writes go in batches (20 per request). `--dry-run` on `--setup-dates` and `--backfill-dates` lists what would happen; `--import` and `--update` in dry-run mode neither create fields nor mention dates.
+- Writes go in batches (50 per request). `--dry-run` on `--setup-dates` and `--backfill-dates` lists what would happen; `--import` and `--update` in dry-run mode neither create fields nor mention dates.
 - **Opting out.** `--no-dates` skips the dates for one `--import` / `--update`; `enabled = false` under `[dates]` in `.kopi.toml` turns them off for the repo, including the stamping by `--start`, `--done` and `--move`. `--setup-dates` and `--backfill-dates` still work when asked for explicitly.
 
 ### Seeing and filtering the dates
@@ -599,6 +628,11 @@ Items:
 Todo (3):
   - ...
 
+Trends (last 12 months):
+  - 2026-10: 115 releases, 2 work items completed
+Cycle time (Started to Completed): median 0 days, mean 0 days, longest 0 days (2 items)
+Between releases: median 1 day, mean 1 day, longest 1 day (2 gaps)
+
 Recent releases:
   - 0.6.4 (2026-10-10): 4 entries
 
@@ -608,6 +642,8 @@ Board vs files:
 
 - **Progress** counts work items only (**Tracked work**). The board's `[version] ...` changelog entries are history, not work, so they get their own **Shipped** line (entries and releases, shown only when there are some) and are left out of the percentage; a repo whose record is mostly a changelog no longer reads as "7% done". Items without a recognised status are counted as "without a status". Custom Status names are understood as for the other commands (see `--status-map`).
 - **Items** splits the work items into drafts, issues and pull requests; the In Progress and Todo items are listed (the first ten of each).
+- **Milestones** (shown when any issue or PR on the board has one) list each milestone with how many of its board items are Done and its due date, soonest first. They are read, never written: the board's own Milestone field already shows them. With `--json`: `milestones: [{title, due, done, total}]`.
+- **Trends** (shown when there is anything to measure) come from the board's Started / Completed dates and the changelog's release dates: for each of the last 12 months, the changelog versions released and the work items (not changelog entries) completed; the **cycle time** of work items with both dates (median, mean, longest, in days); and the gap between consecutive release days. With `--json` they are `trends: {months: [{month, releases, completed}], cycle_days, release_interval_days}`, the last two `{n, median, mean, longest}` or null. A board without date fields shows only the release counts.
 - **Recent releases** are the newest five sections of `CHANGELOG.md` with their dates and number of entries.
 - **Board vs files** is the number of differences `--diff` would report, or "not compared" when there is no `CHANGELOG.md` or `TODO.md`.
 - `kopi --report markdown` writes the same thing as Markdown headings and bullets. With `--json` you get the data instead, whatever the format.

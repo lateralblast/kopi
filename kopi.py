@@ -20,11 +20,27 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "1.0.4"
+__version__ = "1.0.7"
 
 
 class GhError(RuntimeError):
     pass
+
+
+def api_reset_time():
+    """When a spent GraphQL budget resets, as "HH:MM UTC (in N min)", or None if the budget is not spent or cannot be read.
+    The rateLimit query itself is still answered when nothing is left."""
+    try:
+        proc = subprocess.run(["gh", "api", "graphql", "-f", "query={ rateLimit { remaining resetAt } }"],
+                              capture_output=True, text=True)
+        limit = json.loads(proc.stdout)["data"]["rateLimit"]
+        if limit["remaining"] > 0:
+            return None
+        reset = datetime.datetime.fromisoformat(limit["resetAt"].replace("Z", "+00:00"))
+        minutes = max(1, round((reset - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 60))
+        return f"{reset:%H:%M} UTC (in {minutes} min)"
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def run(*args):
@@ -37,8 +53,13 @@ def run(*args):
         msg = proc.stderr.strip() or proc.stdout.strip()
         if "scope" in msg:
             msg += "\nHint: run `gh auth refresh -s project`"
-        if "rate limit" in msg.lower():
-            msg += ("\nHint: GitHub's API limit was reached. See when it resets with "
+        # gh reports "unknown owner type" when its owner lookup is refused, which is what a spent budget looks like
+        reset = api_reset_time() if "rate limit" in msg.lower() or "unknown owner type" in msg else None
+        if "rate limit" in msg.lower() or reset:
+            msg += (f"\nHint: GitHub's API limit was reached; it resets at {reset}, so retry after that. Reading a board "
+                    "costs about 0.7 points per item (5000 an hour), so a big board uses it up quickly"
+                    if reset else
+                    "\nHint: GitHub's API limit was reached. See when it resets with "
                     "`gh api graphql -f query='{ rateLimit { remaining resetAt } }'` (`gh api rate_limit` can show stale "
                     "numbers), then retry after that time")
         raise GhError(msg)
@@ -807,29 +828,57 @@ def set_statuses(args, info, pairs):
 SETTLE_TIMEOUT, SETTLE_INTERVAL = 30, 2
 
 
-def wait_for_items(args, number, ids):
-    """Poll item-list until every new item id is listed, so an immediate re-run sees them.
+TOTAL_QUERY = "query($id: ID!) { node(id: $id) { ... on ProjectV2 { items(first: 1) { totalCount } } } }"
+
+
+def board_total(args, number):
+    """How many items GitHub counts on the project (archived ones too), or None if it cannot be read.
+
+    One API point however big the board is, where listing the items costs about 0.7 points each (400 for 573)."""
+    try:
+        project_id = run_json("project", "view", str(number), *_owner(args))["id"]
+        return graphql(TOTAL_QUERY, id=project_id)["data"]["node"]["items"]["totalCount"]
+    except (GhError, KeyError, TypeError, ValueError):
+        return None
+
+
+def wait_for_items(args, number, ids, before=None):
+    """Wait until GitHub lists the new items, so an immediate re-run sees them.
 
     GitHub's listing lags after writes; without this a second --update can re-add the same items. Callers run it
-    after their other writes, so the lag has usually passed and the first poll is enough.
-    Gives up after SETTLE_TIMEOUT seconds with a warning.
+    after their other writes, so the lag has usually passed and the first poll is enough. `before` is the
+    board_total taken before the writes: with it the wait polls that count (one API point a poll, and it catches up
+    no earlier than the listing does); without it, or if the count cannot be read, it lists every item each poll,
+    which on a big board spends the hourly API budget. Gives up after SETTLE_TIMEOUT seconds with a warning, and a
+    failure while waiting (a rate limit, say) is a warning too: the writes have been made by then.
     """
     pending = set(ids)
     if not pending:
         return
     progress(args, f"Waiting for GitHub to list the {len(pending)} new items...")
     waited = 0
-    while True:
-        listed = {i["id"] for i in board_items(args, number)}
-        pending -= listed
-        if not pending:
-            return
-        if waited >= SETTLE_TIMEOUT:
-            print(f"warning: {len(pending)} new items not yet listed by GitHub; wait before running --update again",
-                  file=sys.stderr)
-            return
-        time.sleep(SETTLE_INTERVAL)
-        waited += SETTLE_INTERVAL
+    try:
+        while True:
+            if before is not None:
+                total = board_total(args, number)
+                if total is None:
+                    before = None   # cannot count: fall back to the full listing
+                    continue
+                if total >= before + len(pending):
+                    return
+            else:
+                pending -= {i["id"] for i in board_items(args, number)}
+                if not pending:
+                    return
+            if waited >= SETTLE_TIMEOUT:
+                print(f"warning: {len(pending)} new items not yet listed by GitHub; wait before running --update again",
+                      file=sys.stderr)
+                return
+            time.sleep(SETTLE_INTERVAL)
+            waited += SETTLE_INTERVAL
+    except GhError as e:
+        print(f"warning: could not confirm that GitHub lists the new items ({e}); the writes were made, wait a little "
+              "before running --update again", file=sys.stderr)
 
 
 # --- Started / Completed dates, for the project's Roadmap view ---------------------------------------------------
@@ -1164,6 +1213,7 @@ def cmd_import(args):
         emit(args, {"project": number, "dry_run": False, "imported": 0, "reason": "project already has items"})
         return
     info = status_info(args, number, [st for st, *_ in plan + linked])
+    before = board_total(args, number)
     progress(args, f"Importing {total} items into project #{number}")
     created = create_items(args, info, [(t, b) for _, t, b in plan], [u for _, _, u in linked])
     set_statuses(args, info, list(zip(created, [st for st, *_ in plan + linked])))
@@ -1171,7 +1221,7 @@ def cmd_import(args):
     made += [{"id": i, "title": t, "status": st, "content": {"url": u}} for i, (st, t, u) in zip(created[len(plan):], linked)]
     dates, fields = sync_dates(args, number, made, changelog)
     sections = sync_sections(args, number, made, todo)
-    wait_for_items(args, number, created)   # last: the date writes need only the ids, and give GitHub's listing time to catch up
+    wait_for_items(args, number, created, before)   # last: the date writes need only the ids, and give GitHub's listing time to catch up
     say(args, f"Imported {total} items into project #{number}" + (f" ({len(dates)} dates set)" if dates else "")
         + (f" ({len(sections)} sections set)" if sections else ""))
     emit(args, {"project": number, "dry_run": False, "imported": total, **({"dates": dates} if dates else {}),
@@ -1193,13 +1243,14 @@ def _item_url(item):
     return None
 
 
-def sync_plan(args):
+def sync_plan(args, items=None):
     """Compare CHANGELOG.md, TODO.md and the repo's issues/PRs with the project's items.
 
     Returns a namespace with: number; adds [(status, title, body)]; link_adds [(status, title, url)];
     moves [(item, from, to, title)] where the board is behind; ahead [(item, board, file, title)] where
     the board is ahead (never acted on); orphans, the board's draft items that match no file entry; ticks
     [(item, todo text, todo status)] for TODO entries still open although their board item is Done.
+    `items` are the board's items when the caller has read them already (reading costs API points per item).
     """
     changelog, todo, linked = load_sources(args)
     extras = load_extras(args, changelog)
@@ -1210,7 +1261,7 @@ def sync_plan(args):
     if not project:
         raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
     number = project["number"]
-    existing = board_items(args, number)
+    existing = items if items is not None else board_items(args, number)   # `items`: already read, so not read twice
 
     # (status, title, body, is_changelog, can_add); skipped TODO items only advance a stale board copy
     entries = [(st, t, body, bool(CHANGELOG_TITLE.match(t)), True) for st, t, body in plan]
@@ -1321,6 +1372,7 @@ def cmd_update(args):
                     **({"sections": sections} if sections else {})})
         return
     info = status_info(args, number, [st for st, *_ in adds + link_adds] + [new for _, _, new, _ in moves])
+    before = board_total(args, number)
     progress(args, f"Updating project #{number}: {len(adds) + len(link_adds)} to add, {len(moves)} to move")
     created = create_items(args, info, [(t, b) for _, t, b in adds], [u for _, _, u in link_adds])
     set_statuses(args, info, list(zip(created, [st for st, *_ in adds + link_adds]))
@@ -1331,7 +1383,7 @@ def cmd_update(args):
     board = [{**i, "status": moved.get(i["id"], i.get("status"))} for i in p.items] + made   # every item, as it now stands
     dates, fields = sync_dates(args, number, board, p.changelog)
     sections = sync_sections(args, number, board, _read("TODO.md"))
-    wait_for_items(args, number, created)
+    wait_for_items(args, number, created, before)
     say(args, f"Updated project #{number}: {len(adds) + len(link_adds)} added, {len(moves)} moved"
         + (f", {len(dates)} dates set" if dates else "") + (f", {len(sections)} sections set" if sections else ""))
     emit(args, {**report, **({"dates": dates} if dates else {}), **({"date_fields_created": fields} if fields else {}),
@@ -2020,9 +2072,10 @@ def cmd_reopen(args):
     if set_status and item:
         set_status(item["id"], "Todo")
     elif set_status:
+        before = board_total(args, project["number"])
         item_id = run_json("project", "item-add", str(project["number"]), *_owner(args), "--url", issue["url"])["id"]
         set_status(item_id, "Todo")
-        wait_for_items(args, project["number"], [item_id])
+        wait_for_items(args, project["number"], [item_id], before)
     say(args, f"Reopened #{issue['number']}: {issue['title']}"
         + (f" (board: {report['board']['action']})" if project else ""))
     emit(args, report)
@@ -2063,9 +2116,10 @@ def cmd_open(args):
     for label in args.label or []:
         cmd += ["--label", label]
     url = run(*cmd).strip().splitlines()[-1]
+    before = board_total(args, number)
     item_id = run_json("project", "item-add", str(number), *_owner(args), "--url", url)["id"]
     set_status(item_id, "Todo")
-    wait_for_items(args, number, [item_id])
+    wait_for_items(args, number, [item_id], before)
     report["created"] = {"title": title, "url": url, "number": int(url.rstrip("/").rsplit("/", 1)[-1]), "item_id": item_id}
     say(args, f"Opened {slug}#{report['created']['number']}: {url} (added to project #{number} as Todo)")
     emit(args, report)
@@ -2134,7 +2188,7 @@ def build_report(args):
     versions = {m.group(1) for m in (CHANGELOG_TITLE.match(i["title"]) for i in items) if m}
     kinds = [(i.get("content") or {}).get("type") for i in work]
     try:
-        differences = sum(diff_summary(sync_plan(args))[2])
+        differences = sum(diff_summary(sync_plan(args, items=items))[2])
     except GhError:  # no CHANGELOG.md / TODO.md to compare with
         differences = None
     return {"project": {"number": project["number"], "title": project["title"], "url": project.get("url")},

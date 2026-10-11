@@ -120,3 +120,8 @@ def test_report_keeps_shipped_history_apart_from_the_percentage(capsys):
     assert "Tracked work: 0% done (0 done, 0 in progress, 1 todo)\nShipped: 9 changelog entries in 3 releases" in out
     _run_update([{"id": "T1", "title": "Open work", "status": "Todo"}], argv=("--report",))
     assert "Shipped" not in capsys.readouterr().out          # nothing shipped: no line
+
+
+def test_report_reads_the_board_only_once(capsys):
+    rc, rj, _ = _run_update(REPORT_BOARD, argv=("--report",))
+    assert rc == 0 and len([c for c in rj.call_args_list if c.args[1] == "item-list"]) == 1   # reading costs API points per item

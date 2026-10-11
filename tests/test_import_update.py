@@ -367,3 +367,12 @@ def test_fetch_linked_says_once_that_issues_are_off_and_otherwise_stays_quiet(ca
     with mock.patch("kopi.run", side_effect=cli.GhError("boom")):
         cli.fetch_linked(("o", "r"))
         assert "warning: could not list issues for o/r: boom" in capsys.readouterr().err      # other failures still warn
+
+
+def test_import_waits_on_the_item_count_not_by_listing_the_board_again(capsys):
+    gql = FakeGraphql()
+    rc, rj, _ = _run_import([], argv=("--import",), gql=gql)
+    assert rc == 0
+    lists = [c for c in rj.call_args_list if c.args[1] == "item-list"]
+    assert len(lists) == 1 and "1" in lists[0].args           # only the "is the project empty" check, with --limit 1
+    assert any("totalCount" in q for q in gql.queries)

@@ -260,3 +260,55 @@ def test_wrapped_bullets_are_one_entry_in_changelog_and_todo():
         ("Todo", "**Interleaved functions have no callers.** They now assert on rows that are not a multiple of 128."),
         ("Done", "Short one."), ("In Progress", "Tail wraps too")]
     assert cli.bullet_blocks(["- a", "  b", "", "- c"]) == [(0, 1), (3, 3)]
+
+
+def _waiting_args():
+    return mock.Mock(owner="o", json=False, quiet=True, status_map=None, config_data={})
+
+
+def test_wait_for_items_polls_the_cheap_count_not_the_whole_board():
+    totals = iter([10, 10, 13])     # the three new items show up on the third poll
+    with mock.patch("kopi.board_total", side_effect=lambda *a: next(totals)), \
+         mock.patch("kopi.board_items") as listing, mock.patch("kopi.time.sleep"):
+        cli.wait_for_items(_waiting_args(), 2, ["a", "b", "c"], before=10)
+    assert not listing.called and next(totals, None) is None                  # three polls, no full listing
+
+
+def test_wait_for_items_falls_back_to_the_listing_when_the_count_cannot_be_read():
+    with mock.patch("kopi.board_total", return_value=None), \
+         mock.patch("kopi.board_items", return_value=[{"id": "a"}, {"id": "b"}]) as listing:
+        cli.wait_for_items(_waiting_args(), 2, ["a", "b"], before=5)
+        assert listing.call_count == 1
+        listing.reset_mock()
+        cli.wait_for_items(_waiting_args(), 2, ["a"])                          # no count taken beforehand: the listing too
+        assert listing.call_count == 1
+
+
+def test_wait_for_items_gives_up_with_a_warning_and_a_failure_is_only_a_warning(capsys):
+    with mock.patch("kopi.board_total", return_value=10), mock.patch("kopi.time.sleep"):
+        cli.wait_for_items(_waiting_args(), 2, ["a"], before=10)               # never reaches 11
+    assert "1 new items not yet listed" in capsys.readouterr().err
+    with mock.patch("kopi.board_total", side_effect=cli.GhError("API rate limit exceeded")):
+        cli.wait_for_items(_waiting_args(), 2, ["a"], before=10)               # does not raise: the writes were made
+    assert "could not confirm that GitHub lists the new items (API rate limit exceeded)" in capsys.readouterr().err
+
+
+def test_board_total_reads_one_count_and_gives_none_when_it_cannot():
+    gql = FakeGraphql()
+    gql.base_total = 41
+    with mock.patch("kopi.run_json", return_value={"id": "PID"}), mock.patch("kopi.graphql", gql):
+        assert cli.board_total(_waiting_args(), 2) == 41
+    with mock.patch("kopi.run_json", side_effect=cli.GhError("boom")):
+        assert cli.board_total(_waiting_args(), 2) is None
+
+
+def test_rate_limit_hint_gives_the_reset_time_when_the_budget_is_spent():
+    spent = mock.Mock(returncode=0, stdout=json.dumps({"data": {"rateLimit": {"remaining": 0, "resetAt": "2099-01-01T10:39:16Z"}}}), stderr="")
+    failed = mock.Mock(returncode=1, stdout="", stderr="unknown owner type")
+    with mock.patch("kopi.subprocess.run", side_effect=[failed, spent]), pytest.raises(cli.GhError) as exc:
+        cli.run("project", "list")
+    assert "resets at 10:39 UTC (in " in str(exc.value) and "0.7 points per item" in str(exc.value)
+    left = mock.Mock(returncode=0, stdout=json.dumps({"data": {"rateLimit": {"remaining": 900, "resetAt": "2099-01-01T10:39:16Z"}}}), stderr="")
+    with mock.patch("kopi.subprocess.run", side_effect=[failed, left]), pytest.raises(cli.GhError) as exc:
+        cli.run("project", "list")
+    assert str(exc.value) == "unknown owner type"                              # budget left: not a rate limit, so no hint

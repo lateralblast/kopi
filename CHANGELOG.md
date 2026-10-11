@@ -7,6 +7,21 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-10-11
+
+### Fixed
+- `--report` read the board twice (for its counts, then again for the comparison with the files). It now reads it once, which halves its API cost on a big board.
+
+## [1.0.6] - 2026-10-11
+
+### Changed
+- When GitHub's API limit is spent, the error now says when it resets (`resets at 10:39 UTC (in 4 min)`) and that reading a board costs about 0.7 points per item. `gh` reports a spent budget as `unknown owner type`; that is recognised too (only when the budget really is 0). Documented in `README.md`.
+
+## [1.0.5] - 2026-10-11
+
+### Fixed
+- `--import` and `--update` used up the hourly GraphQL budget on a big board: waiting for GitHub to list the new items re-listed the whole board every two seconds, about 400 points for a 573-item board (found importing `guige`, whose 573-entry changelog hit the limit; the writes had all been made, but the run ended with a misleading `unknown owner type`). The wait now polls the board's item count, one point a poll, which catches up no earlier than the listing does (measured). If the wait itself fails, for a rate limit or anything else, it is a warning and the import is still reported, since the writes are done. `--open` and `--reopen` use the same wait. Documented in `README.md`.
+
 ## [1.0.4] - 2026-10-11
 
 ### Changed

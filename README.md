@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 1.0.4
+Version: 1.0.7
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -206,6 +206,8 @@ Progress is never printed with `--json`, so a script's stderr stays quiet as wel
 
 `kopi` reads up to 1000 projects, 5000 board items and 5000 issues (and, separately, PRs) per repo. `gh` pages through results, so these are effectively "everything" for normal boards. If a lookup reaches its cap, `kopi` prints a warning on stderr rather than silently dropping the rest.
 
+**API budget.** GitHub allows 5000 GraphQL points an hour. Writes are cheap (kopi batches 20 into one request, about a point each), but reading the board is not: listing items costs about 0.7 points each, so one read of a 573-item board is about 400 points and `--update`, `--diff`, `--report` and `--sync` each read it at least once (`--report` reads it once, not twice). A repo with hundreds of changelog entries can therefore use up the hour with a handful of commands. When the budget runs out kopi says when it resets (`resets at 10:39 UTC (in 4 min)`); an `--import` that hits the limit only after its writes has still imported everything, so run `--diff` after the reset to check. `gh api graphql -f query='{ rateLimit { remaining resetAt } }'` shows the budget.
+
 ## Projects
 
 ### Listing projects
@@ -250,7 +252,7 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 - A `TODO.md` item with no matching item is added as **Todo**, **In Progress** or **Done** according to its checkbox. Items match by identical title, or by very similar wording (75%+ shared words); each board item matches at most one file entry.
 - If an item already exists but is behind the file (for example Todo on the board, now `[x]` in `TODO.md`), it is moved forward rather than duplicated. Items are never moved backwards, and nothing is deleted, so items removed from the files stay on the board.
 - Completed entries (`[x]` in `TODO.md`, or any `CHANGELOG.md` entry) that match no board item exactly are also compared, at 60%+ shared words, with board items that are not yet Done (Todo or In Progress). A match moves that item to **Done** instead of adding a duplicate, so reworded items still get closed. Each board item is matched at most once, best pairs first.
-- GitHub's item listing can lag for a short time after writes. After adding items, `--update` and `--import` finish their other writes (such as the dates) and then poll the listing (up to 30 seconds) until every new item appears, so an immediate re-run won't add them twice. The dates are written first because they need only the new items' ids; the wait is then a few seconds. An import's time is mostly the writes themselves, about 0.13 seconds each (143 items took 91 seconds). If GitHub is still slow they print a warning; wait a little before running `--update` again.
+- GitHub's item listing can lag for a short time after writes. After adding items, `--update` and `--import` finish their other writes (such as the dates) and then poll the board's item count (up to 30 seconds; one API point a poll) until the new items are counted, so an immediate re-run won't add them twice. The dates are written first because they need only the new items' ids; the wait is then a few seconds. An import's time is mostly the writes themselves, about 0.13 seconds each (143 items took 91 seconds). If GitHub is still slow they print a warning; wait a little before running `--update` again.
 - Keeping an item's text unchanged when you tick it is still the most reliable way to match.
 - The repo's issues and PRs are matched to board items by URL. New ones are added as linked items (open issue **Todo**, closed issue **Done**, open PR **In Progress**, merged PR **Done**), and existing ones move forward when their state on GitHub does (for example an issue closed since the last run). A reopened issue is not moved back. Linked items never take part in title matching, so a changelog entry can't close one, and a new `TODO.md` item that duplicates an issue or PR title is left to the issue or PR.
 

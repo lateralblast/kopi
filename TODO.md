@@ -7,6 +7,7 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] Fixes from importing `guige` (573 entries): the settle wait polls the item count instead of re-listing the board (it used the hourly API budget), a failed wait is a warning, the rate-limit error gives the reset time, and `--report` reads the board once, with tests.
 - [x] Fixes from importing `ussuri` (120 changelog entries, no `TODO.md`): same-day releases in `--gantt` sorted by version number, and a clearer `--report` for a board with no tracked work, with tests.
 - [x] Checked the Mermaid chart (and `ROADMAP.md` output) in GitHub's renderer, and the SVG: both look fine.
 - [x] Created the Roadmap view (layout Roadmap, Started and Completed as the date fields) for the `kopi` and `druid` projects in the web UI; it looks fine.

@@ -68,9 +68,12 @@ class FakeGraphql:
     def __init__(self, fields=()):
         self.fields, self.created, self.added, self.statuses, self.dates, self.queries = list(fields), [], [], [], [], []
         self.sections = []
+        self.base_total = 0
 
     def __call__(self, query, **variables):
         self.queries.append(query)
+        if "totalCount" in query:   # the board's item count: what it had, plus what has been created or added
+            return {"data": {"node": {"items": {"totalCount": self.base_total + len(self.created) + len(self.added)}}}}
         if "fields(first: 100)" in query:
             return {"data": {"node": {"fields": {"nodes": self.fields}}}}
         data = {}

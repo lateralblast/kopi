@@ -7,6 +7,9 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] Checked `--apply-labels` live on a temporary issue (since deleted): `--dry-run` reported the label and warned about an unknown one without touching GitHub; the real run added the label and rewrote the file with it; a label removed from the file stayed on GitHub and came back in the file. An unknown label drops out of the rewritten file after the warning (documented).
+- [x] Checked milestone and assignee output against a real issue with a label, assignee and milestone (temporary, since deleted): the slim read and `gh project item-list` return the same `labels` / `assignees` / `milestone` (`gh` adds the milestone's `description`, which kopi does not use), `--report` shows `kopi-test-milestone: 0 of 1 done (due 2026-11-30)`, and `ISSUES.md` shows `(kopi-test) @richardatlateralblast`.
+- [x] Checked the CI recipe from a simulated runner: `docs/kopi-check.yml` parses (triggers, paths, cron, `GH_TOKEN` env as documented), and a fresh clone with the origin set to GitHub, kopi pip-installed into a new venv, an empty `HOME` and only `GH_TOKEN` set reads the board and exits 2 on drift, or 1 with the "Not authorised" message when there is no token. Not run on a real Actions runner (that needs the workflow pushed).
 - [x] Group a long changelog by minor version: `[changelog] group = "minor"` (one `[16.5] Releases 16.5.x` item per minor with a bullet-list body and a date span), with tests; verified live on a scratch board (6 groups, idempotent, `--diff` clean).
 - [x] Milestones: read with the board items and shown per milestone (done of total, due date) in `--report` and `--json`, with tests. Read-only; the live query was checked but no real milestone was available to confirm the output.
 - [x] `--report` trends: releases and completed work items per month, cycle time and the gap between releases, with tests.

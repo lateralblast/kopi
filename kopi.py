@@ -22,7 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 
-__version__ = "1.1.8"
+__version__ = "1.2.1"
 
 
 class GhError(RuntimeError):

@@ -7,6 +7,21 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-12
+
+### Changed
+- `--apply-labels` was checked live on a temporary issue: `--dry-run` reports and warns without touching GitHub, the real run adds the label and rewrites the file, and a label deleted from the file stays on GitHub. A label the repo does not have is warned about and then drops out of the rewritten file; the README now says so.
+
+## [1.2.0] - 2026-10-12
+
+### Changed
+- Milestone, assignee and label output was checked against a real issue that has all three: the slim read and `gh project item-list` return the same `labels`, `assignees` and `milestone` (`gh` adds the milestone's `description`, which kopi does not use), `--report` lists the milestone with its due date, and `ISSUES.md` shows the assignee. No code change.
+
+## [1.1.9] - 2026-10-12
+
+### Changed
+- The CI recipe (`docs/kopi-check.yml`) was checked from a simulated runner: kopi pip-installed into a new venv, an empty `HOME`, only `GH_TOKEN` set. `kopi --diff --check` reads the board and exits 2 on drift, or exits 1 with the "Not authorised" message when there is no token. No code change.
+
 ## [1.1.8] - 2026-10-12
 
 ### Added

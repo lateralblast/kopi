@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 1.1.8
+Version: 1.2.1
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -356,7 +356,7 @@ By default `--import` and `--update` process both `CHANGELOG.md` and `TODO.md`, 
 
 - Unlike the `TODO.md` exports, which only add what's missing, this **replaces** `ISSUES.md` each time, so it is always an exact picture of the board, except that entries with no link (added with `--open --local`) are kept until a board issue with the same title exists. The file starts with a comment line saying so. A file without that line (one you wrote by hand) is never overwritten unless you pass `--force`. Delete the comment line yourself to take over a generated file.
 - If nothing changed the file is left alone ("ISSUES.md is up to date"). `--dry-run` lists the issues without writing.
-- **Labels and assignees.** Each bullet carries the issue's labels in parentheses and its assignees as `@login`s after them. Labels also go the other way, but only when you ask: `--apply-labels` (with `--export issues|prs`, `--squash` or `--sync`) first adds to GitHub every label the existing file lists for an issue that lacks it, so a label you typed into `ISSUES.md` is kept instead of overwritten, and the rewritten file shows the union. It never removes a label (one missing from the file may just have been added on GitHub since), labels the repo does not have are warned about and not created, and `--dry-run` only reports. Assignees are shown, never written back.
+- **Labels and assignees.** Each bullet carries the issue's labels in parentheses and its assignees as `@login`s after them. Labels also go the other way, but only when you ask: `--apply-labels` (with `--export issues|prs`, `--squash` or `--sync`) first adds to GitHub every label the existing file lists for an issue that lacks it, so a label you typed into `ISSUES.md` is kept instead of overwritten, and the rewritten file shows the union. It never removes a label (one missing from the file may just have been added on GitHub since), labels the repo does not have are warned about, not created, and left out of the rewritten file, and `--dry-run` only reports. Assignees are shown, never written back.
 - The board is not changed. Whether `ISSUES.md` belongs in your repository (or in `.gitignore`) is up to you.
 
 **Exporting pull requests to PRS.md (`--export prs`).** It works exactly like `--export issues` but for the board's **pull request** items, writing `PRS.md` (`- [#8](url) Title`, grouped by board status). The same rules apply: the file is replaced each time, and a `PRS.md` kopi did not generate needs `--force`. There is no `--import prs`: a pull request needs a branch and commits, so it cannot be created from a line of text.

@@ -7,6 +7,7 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] Fixes from importing `lunar` (1,631 entries, 22 issues, 40 PRs): measured the real read cost (about 1 point per item with date fields) and corrected the docs and hints, and the rate-limit hint gives the reset time when some budget is left, with a test.
 - [x] `--checkquota` shows the GraphQL quota left and when it resets, with tests.
 - [x] Fix from importing `manx` (193 entries): versions with several release headings are reported and take the latest date, with a test.
 - [x] Fixes from importing `guige` (573 entries): the settle wait polls the item count instead of re-listing the board (it used the hourly API budget), a failed wait is a warning, the rate-limit error gives the reset time, and `--report` reads the board once, with tests.

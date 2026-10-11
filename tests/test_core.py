@@ -217,7 +217,7 @@ def test_rate_limit_error_says_how_to_check_the_reset():
     proc = mock.Mock(returncode=1, stdout="", stderr="GraphQL: API rate limit exceeded for user ID 1.")
     with mock.patch("kopi.subprocess.run", return_value=proc), pytest.raises(cli.GhError) as exc:
         cli.run("project", "list")
-    assert "rate limit exceeded" in str(exc.value) and "rateLimit { remaining resetAt }" in str(exc.value)
+    assert "rate limit exceeded" in str(exc.value) and "kopi --checkquota" in str(exc.value)
 
 
 PLAIN_CHANGELOG = """# Changelog
@@ -307,7 +307,7 @@ def test_rate_limit_hint_gives_the_reset_time_when_the_budget_is_spent():
     failed = mock.Mock(returncode=1, stdout="", stderr="unknown owner type")
     with mock.patch("kopi.subprocess.run", side_effect=[failed, spent]), pytest.raises(cli.GhError) as exc:
         cli.run("project", "list")
-    assert "resets at 10:39 UTC (in " in str(exc.value) and "0.7 points per item" in str(exc.value)
+    assert "resets at 10:39 UTC (in " in str(exc.value) and "1 point per item" in str(exc.value)
     left = mock.Mock(returncode=0, stdout=json.dumps({"data": {"rateLimit": {"remaining": 900, "resetAt": "2099-01-01T10:39:16Z"}}}), stderr="")
     with mock.patch("kopi.subprocess.run", side_effect=[failed, left]), pytest.raises(cli.GhError) as exc:
         cli.run("project", "list")
@@ -365,7 +365,7 @@ def test_checkquota_reports_what_is_left_and_flags_a_low_quota(capsys):
     assert run.call_args.args[:3] == ("api", "graphql", "-f") and "rateLimit" in run.call_args.args[3]
     with mock.patch("kopi.check_auth"), mock.patch("kopi.run", return_value=_quota_out(163)):
         cli.main(["--checkquota"])
-    assert "Low: reading a board costs about 0.7 points per item" in capsys.readouterr().out
+    assert "Low: reading a board costs about 1 point per item" in capsys.readouterr().out
     with mock.patch("kopi.check_auth"), mock.patch("kopi.run", return_value=_quota_out(0)):
         cli.main(["--json", "--checkquota"])
     data = json.loads(capsys.readouterr().out)
@@ -379,3 +379,13 @@ def test_checkquota_errors_are_clear_and_it_is_a_mode_of_its_own(capsys):
     with pytest.raises(SystemExit) as e:
         cli.main(["--checkquota", "--report"])
     assert e.value.code == 2
+
+
+def test_rate_limit_hint_gives_the_reset_time_even_when_some_budget_is_left():
+    """A read that costs more than what remains fails with 'rate limit exceeded' while remaining > 0."""
+    quota = json.dumps({"data": {"rateLimit": {"limit": 5000, "remaining": 76, "used": 4924, "resetAt": "2026-10-11T13:01:00Z"}}})
+    limited = mock.Mock(returncode=1, stdout="", stderr="GraphQL: API rate limit exceeded for user ID 1.")
+    answer = mock.Mock(returncode=0, stdout=quota, stderr="")
+    with mock.patch("kopi.subprocess.run", side_effect=[limited, answer]), pytest.raises(cli.GhError) as exc:
+        cli.run("project", "item-list", "1")
+    assert "resets at 13:01 UTC" in str(exc.value)

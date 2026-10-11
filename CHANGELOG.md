@@ -7,6 +7,12 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-12
+
+### Fixed
+- The rate-limit error now gives the reset time (`resets at 13:01 UTC (in 38 min)`) even when a few points are left, which is what a read that needs more than the remainder reports; otherwise it points to `kopi --checkquota`, not a raw `gh api` query.
+- The documented cost of reading a board was too low: measured at about 1 point per item with the Started / Completed fields (1,520 points for the 1,631-item `lunar` board, 0.7 without them). Every read-only command (`--update --dry-run`, `--gantt`, `--report`) pays it, so the README, the error hint and the `--checkquota` warning say "about 1 point per item".
+
 ## [1.0.9] - 2026-10-11
 
 ### Added

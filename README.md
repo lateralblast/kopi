@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 1.0.9
+Version: 1.1.0
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -207,7 +207,7 @@ Progress is never printed with `--json`, so a script's stderr stays quiet as wel
 
 `kopi` reads up to 1000 projects, 5000 board items and 5000 issues (and, separately, PRs) per repo. `gh` pages through results, so these are effectively "everything" for normal boards. If a lookup reaches its cap, `kopi` prints a warning on stderr rather than silently dropping the rest.
 
-**API budget.** GitHub allows 5000 GraphQL points an hour. Writes are cheap (kopi batches 20 into one request, about a point each), but reading the board is not: listing items costs about 0.7 points each, so one read of a 573-item board is about 400 points and `--update`, `--diff`, `--report` and `--sync` each read it at least once (`--report` reads it once, not twice). A repo with hundreds of changelog entries can therefore use up the hour with a handful of commands. When the budget runs out kopi says when it resets (`resets at 10:39 UTC (in 4 min)`); an `--import` that hits the limit only after its writes has still imported everything, so run `--diff` after the reset to check. `kopi --checkquota` shows what is left (`GraphQL quota: 755 of 5000 points left (4245 used); resets at 10:39 UTC (in 12 min)`, with a warning below 10%, and `--json` gives `{limit, remaining, used, reset_at, reset_in_minutes, low}`); it costs one point and needs no project or repo. Check it before a large `--import`, `--update` or `--report`.
+**API budget.** GitHub allows 5000 GraphQL points an hour. Writes are cheap (kopi batches 20 into one request, about a point each), but reading the board is not: listing items costs about 1 point each (a bit less without the Started / Completed fields), so one read of a 573-item board was about 400 points and of a 1,631-item board with dates 1,520 and `--update`, `--diff`, `--report` and `--sync` each read it at least once (`--report` reads it once, not twice). A repo with hundreds of changelog entries can therefore use up the hour with a handful of commands. When the budget runs out kopi says when it resets (`resets at 10:39 UTC (in 4 min)`); an `--import` that hits the limit only after its writes has still imported everything, so run `--diff` after the reset to check. `kopi --checkquota` shows what is left (`GraphQL quota: 755 of 5000 points left (4245 used); resets at 10:39 UTC (in 12 min)`, with a warning below 10%, and `--json` gives `{limit, remaining, used, reset_at, reset_in_minutes, low}`); it costs one point and needs no project or repo. Check it before a large `--import`, `--update` or `--report`.
 
 ## Projects
 

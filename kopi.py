@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "1.0.9"
+__version__ = "1.1.0"
 
 
 class GhError(RuntimeError):
@@ -45,13 +45,13 @@ def _reset_text(quota):
     return f"{quota['reset_at'][11:16]} UTC (in {max(1, quota['reset_in_minutes'])} min)"
 
 
-def api_reset_time():
-    """When a spent GraphQL budget resets, as "HH:MM UTC (in N min)", or None if the budget is not spent or cannot be read.
-    The rateLimit query itself is still answered when nothing is left."""
+def api_reset_time(only_if_spent=True):
+    """When the GraphQL budget resets, as "HH:MM UTC (in N min)", or None if it cannot be read (or, with only_if_spent,
+    if some budget is left). The rateLimit query itself is still answered when nothing is left."""
     try:
         proc = subprocess.run(["gh", "api", "graphql", "-f", f"query={QUOTA_QUERY}"], capture_output=True, text=True)
         quota = parse_quota(proc.stdout)
-        return None if quota["remaining"] > 0 else _reset_text(quota)
+        return None if only_if_spent and quota["remaining"] > 0 else _reset_text(quota)
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -67,14 +67,13 @@ def run(*args):
         if "scope" in msg:
             msg += "\nHint: run `gh auth refresh -s project`"
         # gh reports "unknown owner type" when its owner lookup is refused, which is what a spent budget looks like
-        reset = api_reset_time() if "rate limit" in msg.lower() or "unknown owner type" in msg else None
+        limited = "rate limit" in msg.lower()
+        reset = api_reset_time(only_if_spent=not limited) if limited or "unknown owner type" in msg else None
         if "rate limit" in msg.lower() or reset:
             msg += (f"\nHint: GitHub's API limit was reached; it resets at {reset}, so retry after that. Reading a board "
-                    "costs about 0.7 points per item (5000 an hour), so a big board uses it up quickly"
+                    "costs about 1 point per item (5000 an hour), so a big board uses it up quickly"
                     if reset else
-                    "\nHint: GitHub's API limit was reached. See when it resets with "
-                    "`gh api graphql -f query='{ rateLimit { remaining resetAt } }'` (`gh api rate_limit` can show stale "
-                    "numbers), then retry after that time")
+                    "\nHint: GitHub's API limit was reached. See when it resets with `kopi --checkquota`, then retry after that time")
         raise GhError(msg)
     return proc.stdout
 
@@ -847,7 +846,7 @@ TOTAL_QUERY = "query($id: ID!) { node(id: $id) { ... on ProjectV2 { items(first:
 def board_total(args, number):
     """How many items GitHub counts on the project (archived ones too), or None if it cannot be read.
 
-    One API point however big the board is, where listing the items costs about 0.7 points each (400 for 573)."""
+    One API point however big the board is, where listing the items costs about 1 point each (400 for 573 without date fields, 1,520 for 1,631 with them)."""
     try:
         project_id = run_json("project", "view", str(number), *_owner(args))["id"]
         return graphql(TOTAL_QUERY, id=project_id)["data"]["node"]["items"]["totalCount"]
@@ -2746,7 +2745,7 @@ def cmd_checkquota(args):
         raise GhError(f"could not read the GraphQL quota: {e}")
     low = quota["remaining"] < max(1, (quota["limit"] or 5000) // 10)
     say(args, f"GraphQL quota: {quota['remaining']} of {quota['limit']} points left ({quota['used']} used); "
-        f"resets at {_reset_text(quota)}" + ("\nLow: reading a board costs about 0.7 points per item, so a big board needs "
+        f"resets at {_reset_text(quota)}" + ("\nLow: reading a board costs about 1 point per item, so a big board needs "
                                            "most of it. Wait for the reset before a large --import, --update or --report." if low else ""))
     emit(args, {**quota, "low": low})
 

@@ -1,6 +1,6 @@
 [project]
 name = "kopi"
-version = "1.1.0"
+version = "1.1.1"
 description = "KOPI (Keep Our Projects In-sync): manage GitHub Projects (v2) and keep them in step with CHANGELOG.md, TODO.md, issues and PRs"
 requires-python = ">=3.9"
 license = { file = "LICENSE.md" }

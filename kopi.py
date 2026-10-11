@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 
 class GhError(RuntimeError):
@@ -71,7 +71,7 @@ def run(*args):
         reset = api_reset_time(only_if_spent=not limited) if limited or "unknown owner type" in msg else None
         if "rate limit" in msg.lower() or reset:
             msg += (f"\nHint: GitHub's API limit was reached; it resets at {reset}, so retry after that. Reading a board "
-                    "costs about 1 point per item (5000 an hour), so a big board uses it up quickly"
+                    "through `gh project item-list` costs about 1 point per item (5000 an hour), so a big board uses it up quickly"
                     if reset else
                     "\nHint: GitHub's API limit was reached. See when it resets with `kopi --checkquota`, then retry after that time")
         raise GhError(msg)
@@ -186,9 +186,75 @@ def status_option(status, options, args):
     return next((options[c] for c in candidates if c in options), None)
 
 
+LEAN_READS = True      # read boards with our own slim query; tests switch it off (tests/conftest.py)
+LEAN_PAGE = 100
+LEAN_FIELD_VALUES = 12  # field values asked for per item; an item with more makes the read fall back to `gh`
+LEAN_QUERY = """
+query($id: ID!, $cursor: String) { node(id: $id) { ... on ProjectV2 { items(first: %d, after: $cursor) {
+  pageInfo { hasNextPage endCursor }
+  nodes { id isArchived
+    fieldValues(first: %d) { pageInfo { hasNextPage } nodes { __typename
+      ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
+      ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
+      ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
+      ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } }
+      ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } } } }
+    content { __typename
+      ... on DraftIssue { title body }
+      ... on Issue { title body url number repository { nameWithOwner } labels(first: 10) { nodes { name } } }
+      ... on PullRequest { title body url number repository { nameWithOwner } labels(first: 10) { nodes { name } } } } } } } } }
+""" % (LEAN_PAGE, LEAN_FIELD_VALUES)
+
+
+def lean_item(node):
+    """One GraphQL item node in the shape `gh project item-list` returns, or None for an archived item."""
+    if node.get("isArchived"):
+        return None
+    content = node.get("content") or {}
+    item = {"id": node["id"], "title": content.get("title", ""), "content": {}}
+    if content:
+        item["content"] = {"type": content["__typename"], "title": content.get("title", ""), "body": content.get("body", "")}
+        if content.get("url"):
+            item["content"].update(url=content["url"], number=content["number"], repository=content["repository"]["nameWithOwner"])
+            item["repository"] = f"https://github.com/{content['repository']['nameWithOwner']}"
+            if labels := [n["name"] for n in (content.get("labels") or {}).get("nodes", [])]:
+                item["labels"] = labels
+    for value in node["fieldValues"]["nodes"]:
+        name = ((value.get("field") or {}).get("name") or "").lower()
+        raw = next((value[k] for k in ("name", "date", "text", "number", "title") if k in value), None)
+        if name and raw is not None:
+            item[name] = raw
+    return item
+
+
+def lean_items(args, number):
+    """The project's non-archived items through a query that asks only for what kopi reads (about a third of the
+    points `gh project item-list` costs). Raises GhError, KeyError, TypeError or ValueError when it cannot answer."""
+    project_id = run_json("project", "view", str(number), *_owner(args))["id"]
+    items, cursor = [], None
+    while True:
+        data = graphql(LEAN_QUERY, id=project_id, **({"cursor": cursor} if cursor else {}))["data"]["node"]["items"]
+        for node in data["nodes"]:
+            if node["fieldValues"]["pageInfo"]["hasNextPage"]:
+                raise ValueError(f"an item has more than {LEAN_FIELD_VALUES} field values")
+            if (item := lean_item(node)) is not None:
+                items.append(item)
+        if not data["pageInfo"]["hasNextPage"] or len(items) >= ITEM_LIMIT:
+            return items
+        cursor = data["pageInfo"]["endCursor"]
+
+
 def board_items(args, number):
     """The project's (non-archived) items, all of them, with each item's status normalised to Todo / In Progress / Done."""
-    items = run_json("project", "item-list", str(number), *_owner(args), "--limit", str(ITEM_LIMIT))["items"]
+    items = None
+    if LEAN_READS:
+        try:
+            items = lean_items(args, number)
+        except (GhError, KeyError, TypeError, ValueError) as exc:
+            print(f"warning: slim board read failed ({str(exc).splitlines()[0] if str(exc) else type(exc).__name__}); "
+                  "using `gh project item-list`", file=sys.stderr)
+    if items is None:
+        items = run_json("project", "item-list", str(number), *_owner(args), "--limit", str(ITEM_LIMIT))["items"]
     _warn_if_full("the project's item list", len(items), ITEM_LIMIT)
     for i in items:
         if i.get("status"):
@@ -846,7 +912,7 @@ TOTAL_QUERY = "query($id: ID!) { node(id: $id) { ... on ProjectV2 { items(first:
 def board_total(args, number):
     """How many items GitHub counts on the project (archived ones too), or None if it cannot be read.
 
-    One API point however big the board is, where listing the items costs about 1 point each (400 for 573 without date fields, 1,520 for 1,631 with them)."""
+    One API point however big the board is, where listing the items through `gh project item-list` costs about 1 point each (400 for 573, 1,520 for 1,631 with date fields); `lean_items` reads them for about 0.02 each."""
     try:
         project_id = run_json("project", "view", str(number), *_owner(args))["id"]
         return graphql(TOTAL_QUERY, id=project_id)["data"]["node"]["items"]["totalCount"]
@@ -2745,7 +2811,7 @@ def cmd_checkquota(args):
         raise GhError(f"could not read the GraphQL quota: {e}")
     low = quota["remaining"] < max(1, (quota["limit"] or 5000) // 10)
     say(args, f"GraphQL quota: {quota['remaining']} of {quota['limit']} points left ({quota['used']} used); "
-        f"resets at {_reset_text(quota)}" + ("\nLow: reading a board costs about 1 point per item, so a big board needs "
+        f"resets at {_reset_text(quota)}" + ("\nLow: a board read can cost up to 1 point per item, so a big board needs "
                                            "most of it. Wait for the reset before a large --import, --update or --report." if low else ""))
     emit(args, {**quota, "low": low})
 

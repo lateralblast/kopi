@@ -365,7 +365,7 @@ def test_checkquota_reports_what_is_left_and_flags_a_low_quota(capsys):
     assert run.call_args.args[:3] == ("api", "graphql", "-f") and "rateLimit" in run.call_args.args[3]
     with mock.patch("kopi.check_auth"), mock.patch("kopi.run", return_value=_quota_out(163)):
         cli.main(["--checkquota"])
-    assert "Low: reading a board costs about 1 point per item" in capsys.readouterr().out
+    assert "Low: a board read can cost up to 1 point per item" in capsys.readouterr().out
     with mock.patch("kopi.check_auth"), mock.patch("kopi.run", return_value=_quota_out(0)):
         cli.main(["--json", "--checkquota"])
     data = json.loads(capsys.readouterr().out)

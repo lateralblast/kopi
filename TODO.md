@@ -7,6 +7,8 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] Cheaper board reads: a slim GraphQL query replaces `gh project item-list` (0.02 against 1 point per item), with a `gh` fallback and tests.
+- [x] Delete the test boards created while importing other repos (#10, #12, #13, #14, #16, #17, #18 on lateralblast).
 - [x] Fixes from importing `lunar` (1,631 entries, 22 issues, 40 PRs): measured the real read cost (about 1 point per item with date fields) and corrected the docs and hints, and the rate-limit hint gives the reset time when some budget is left, with a test.
 - [x] `--checkquota` shows the GraphQL quota left and when it resets, with tests.
 - [x] Fix from importing `manx` (193 entries): versions with several release headings are reported and take the latest date, with a test.

@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-12
+
+### Changed
+- Boards are read with kopi's own slim GraphQL query instead of `gh project item-list`: about 0.02 API points per item, where `gh` costs about 1 (32 points against 1,520 for the 1,631-item `lunar` board, in 21 seconds). The items come back in the same shape (status, `Started` / `Completed` and other custom fields, issue and PR links, labels), archived items stay hidden, and kopi falls back to `gh project item-list` with a warning if the query fails or an item has more than 12 field values. `--update`, `--diff`, `--report`, `--sync`, `--gantt`, `--archive` and the other read commands all use it.
+
 ## [1.1.0] - 2026-10-12
 
 ### Fixed

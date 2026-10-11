@@ -6,10 +6,12 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 - [ ] Create the Roadmap view for the `kopi` and `druid` projects in the web UI (layout Roadmap, Started and Completed as the date fields); the API cannot do it.
 - [ ] Check the Mermaid chart in the README (and a generated `ROADMAP.md`) in GitHub's renderer; it has only been checked against the syntax.
-- [ ] Decide what to do with the test release `0.8.2` (it points at a commit without `tests/`): keep it, move it, or delete it.
 
 ## Done
 
+- [x] `--cleanup-tag` deletes a tag whose release is already gone, with tests; used to remove the leftover `0.8.2` tag.
+- [x] `--delete release --tag TAG [--cleanup-tag]` (and `--release TAG` as a spelling of `--tag`), with tests; run live on a throwaway draft release.
+- [x] Deleted the test GitHub release `0.8.2`.
 - [x] `[sections]`: an opt-in Section text field holding the `TODO.md` heading of each item (the "prefix or label" question from `birman`), with tests; tried live on the `birman` board.
 - [x] A repo with issues turned off is noted once by `--import` instead of a warning on every command, with tests.
 - [x] Bold markers are stripped from item titles, with tests.

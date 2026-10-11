@@ -7,6 +7,16 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-11
+
+### Changed
+- `--delete release --tag TAG --cleanup-tag` now also works when the release is already gone and only its tag is left (as after deleting the release by hand): it deletes just the tag. It is still an error when there is neither a release nor a tag, and without `--cleanup-tag` a missing release is still an error that touches nothing. `--json` reports `url: null`, `deleted: false` and `tag_deleted: true` for a tag-only delete. Documented in `README.md`.
+
+## [0.9.9] - 2026-10-11
+
+### Added
+- `--delete release --tag TAG` deletes a GitHub release (`--delete release --release TAG` works too, and `--release TAG` is now the same as `--release --tag TAG`). The tag must be named, the release is looked up first (a wrong tag is an error and deletes nothing), `--dry-run` shows what would go, and the git tag stays on GitHub unless `--cleanup-tag` is given (kopi says when it is left behind). `--json` prints `{repo, tag, url, draft, dry_run, deleted, tag_deleted}`. Documented in `README.md`.
+
 ## [0.9.8] - 2026-10-11
 
 ### Added

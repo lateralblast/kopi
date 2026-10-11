@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.9.8"
+__version__ = "1.0.0"
 
 
 class GhError(RuntimeError):
@@ -2644,6 +2644,44 @@ def remote_tag_commit(slug, tag):
     return run("api", f"repos/{slug}/git/tags/{sha}", "--jq", ".object.sha").strip() if kind == "tag" else sha
 
 
+def cmd_delete_release(args):
+    """--delete release --tag TAG (or --release TAG): delete a GitHub release.
+
+    The tag must be named: there is no "latest" default for a delete. The release is looked up first, so a wrong tag
+    is an error and --dry-run shows what would go. The git tag stays on GitHub unless --cleanup-tag is given, which
+    also works when the release is already gone and only its tag is left (as after deleting the release by hand)."""
+    repo = git_repo()
+    if not repo:
+        raise GhError("--delete must be run inside a git repo with a github.com origin remote")
+    slug = "/".join(repo)
+    tag = (args.tag or "").strip()
+    if not tag or re.search(r"\s", tag):
+        raise GhError("name the release to delete: --delete release --tag TAG (or --release TAG)")
+    try:
+        found = json.loads(run("release", "view", tag, "--repo", slug, "--json", "url,isDraft"))
+    except GhError:
+        found = None
+        if not (args.cleanup_tag and remote_tag_commit(slug, tag)):
+            raise GhError(f"no release {tag} in {slug} (see --list releases)" + ("; no tag of that name either" if args.cleanup_tag else ""))
+    report = {"repo": slug, "tag": tag, "url": found and found["url"], "draft": bool(found and found.get("isDraft")),
+              "dry_run": bool(args.dry_run), "deleted": False, "tag_deleted": False}
+    if args.dry_run:
+        say(args, f"delete\t{'release' if found else 'tag'}\t{tag}\t{report['url'] or ''}" + ("\t+ tag" if found and args.cleanup_tag else ""))
+        emit(args, report)
+        return
+    if found:
+        run("release", "delete", tag, "--repo", slug, "--yes", *(["--cleanup-tag"] if args.cleanup_tag else []))
+        report.update(deleted=True, tag_deleted=bool(args.cleanup_tag))
+        say(args, f"Deleted release {tag} ({found['url']})" + (" and its tag" if args.cleanup_tag else ""))
+    else:
+        run("api", "-X", "DELETE", f"repos/{slug}/git/refs/tags/{tag}")
+        report["tag_deleted"] = True
+        say(args, f"No release {tag}; deleted its tag")
+    if not args.cleanup_tag and remote_tag_commit(slug, tag):
+        say(args, f"The tag {tag} is still on GitHub; --cleanup-tag removes it too")
+    emit(args, report)
+
+
 def release_tag_prefix(args):
     """`[release] tag_prefix` from .kopi.toml (for example "v"), put before the changelog version to name the tag."""
     return ((getattr(args, "config_data", None) or {}).get("release") or {}).get("tag_prefix", "")
@@ -3156,10 +3194,17 @@ def build_parser():
     p.add_argument("--to", metavar="FILE",
                    help="with --gantt: where to write the chart; .svg for an image, .mmd for raw Mermaid, else Markdown "
                         "with a Mermaid block; - prints it")
-    p.add_argument("--release", action="store_true",
+    p.add_argument("--release", nargs="?", const=True, metavar="TAG",
                    help="create a GitHub release at the last commit: the tag is the newest changelog version number "
-                        "(see --tag) and the notes are its CHANGELOG.md section")
-    p.add_argument("--tag", metavar="TAG", help="with --release: the tag name, instead of the newest changelog version number")
+                        "(or TAG, the same as --tag) and the notes are its CHANGELOG.md section; with --delete, names "
+                        "the release to delete")
+    p.add_argument("--tag", metavar="TAG", help="with --release: the tag name, instead of the newest changelog version number; "
+                                                "with --delete release: the release to delete")
+    p.add_argument("--delete", choices=("release",), metavar="KIND",
+                   help="delete a GitHub release (--delete release --tag TAG, or --delete release --release TAG); "
+                        "the tag it was made from stays unless --cleanup-tag is given")
+    p.add_argument("--cleanup-tag", action="store_true",
+                   help="with --delete release: also delete the release's git tag (or just the tag, if the release is already gone)")
     p.add_argument("--draft", action="store_true", help="with --release: create it as a draft")
     p.add_argument("--setup-dates", action="store_true",
                    help="create the Started and Completed date fields on the project if missing (for its Roadmap view)")
@@ -3233,20 +3278,29 @@ def main(argv=None):
     args.import_issues = args.do_import == "issues" and not os.path.isdir("issues")
     if args.import_issues:
         args.do_import = "."
+    if isinstance(args.release, str):   # `--release TAG` is `--release --tag TAG`
+        if args.tag and args.tag != args.release:
+            parser.error(f"--release {args.release} and --tag {args.tag} name different tags")
+        args.tag, args.release = args.release, True
+    make_release = bool(args.release) and not args.delete   # with --delete, --release only names the release to delete
     modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done, args.list, args.export,
              args.sync, args.start, args.move, args.close, args.report,
              args.rollup is not None, args.promote, args.promote_all, args.open, args.reopen, args.setup_dates,
-             args.backfill_dates, args.gantt, args.release]
+             args.backfill_dates, args.gantt, make_release, args.delete]
     if not (any(modes) or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close / --report / --rollup / --promote / --promote-all / --open / --reopen / --setup-dates / --backfill-dates / --gantt / --release)")
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close / --report / --rollup / --promote / --promote-all / --open / --reopen / --setup-dates / --backfill-dates / --gantt / --release / --delete)")
     if sum(map(bool, modes)) > 1:
-        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move, --close, --report, --rollup, --promote, --promote-all, --open, --reopen, --setup-dates, --backfill-dates, --gantt and --release are mutually exclusive")
+        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move, --close, --report, --rollup, --promote, --promote-all, --open, --reopen, --setup-dates, --backfill-dates, --gantt, --release and --delete are mutually exclusive")
     if (args.body is not None or args.label) and not args.open:
         parser.error("--body and --label only apply to --open")
     if args.annotate and not (args.promote or args.promote_all):
         parser.error("--annotate only applies to --promote and --promote-all")
-    if (args.draft or args.tag) and not args.release:
-        parser.error("--draft and --tag only apply to --release")
+    if (args.draft or args.tag) and not (args.release or args.delete):
+        parser.error("--draft and --tag only apply to --release (and --tag to --delete release)")
+    if args.draft and args.delete:
+        parser.error("--draft only applies to --release")
+    if args.cleanup_tag and not args.delete:
+        parser.error("--cleanup-tag only applies to --delete release")
     if args.to and not args.gantt:
         parser.error("--to only applies to --gantt")
     if args.yes and not args.promote_all:
@@ -3299,7 +3353,7 @@ def main(argv=None):
                                           (args.init, cmd_init), (args.sync, cmd_sync), (args.start, cmd_start),
                                           (args.move, cmd_move), (args.close, cmd_close), (args.report, cmd_report), (args.rollup is not None, cmd_rollup),
                                           (args.promote, cmd_promote), (args.promote_all, cmd_promote_all), (args.open, cmd_open), (args.reopen, cmd_reopen), (args.setup_dates, cmd_setup_dates),
-                                          (args.backfill_dates, cmd_backfill_dates), (args.gantt, cmd_gantt), (args.release, cmd_release)) if on), getattr(args, "fn", None))
+                                          (args.backfill_dates, cmd_backfill_dates), (args.gantt, cmd_gantt), (make_release, cmd_release), (args.delete, cmd_delete_release)) if on), getattr(args, "fn", None))
         rc = handler(args)
         return rc if isinstance(rc, int) else 0
     except GhError as e:

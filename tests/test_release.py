@@ -210,3 +210,88 @@ def test_release_tag_prefix_from_config(tmp_path, monkeypatch, capsys):
     assert _created(calls)[0][2] == "0.8.0"
     (tmp_path / ".kopi.toml").write_text("[release]\ntag_prefix = 1\n")
     assert _release(("--release",))[0] == 1 and "release.tag_prefix must be a str" in capsys.readouterr().err
+
+
+def _delete(argv, view="https://github.com/lateralblast/kopi/releases/tag/0.8.2", tag_at=None):
+    """Run kopi with the gh side faked; returns (rc, the gh calls)."""
+    calls = []
+
+    def fake_run(*a):
+        calls.append(a)
+        if a[:2] == ("release", "view"):
+            if view is None:
+                raise cli.GhError("release not found")
+            return json.dumps({"url": view, "isDraft": False})
+        if a[0] == "api" and "/git/ref/tags/" in a[1]:
+            if tag_at is None:
+                raise cli.GhError("Not Found")
+            return f"commit {tag_at}"
+        return ""
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="lateralblast"), \
+         mock.patch("kopi.git_repo", return_value=("lateralblast", "kopi")), mock.patch("kopi.run", side_effect=fake_run):
+        rc = cli.main(list(argv))
+    return rc, calls
+
+
+def _tag_deletes(calls):
+    return [c for c in calls if c[:3] == ("api", "-X", "DELETE")]
+
+
+def _deleted(calls):
+    return [c for c in calls if c[:2] == ("release", "delete")]
+
+
+def test_delete_release_removes_the_named_release_and_mentions_the_tag(capsys):
+    rc, calls = _delete(("--delete", "release", "--release", "0.8.2"), tag_at=SHA)
+    assert rc == 0 and _deleted(calls) == [("release", "delete", "0.8.2", "--repo", "lateralblast/kopi", "--yes")]
+    out = capsys.readouterr().out
+    assert "Deleted release 0.8.2 (https://github.com/lateralblast/kopi/releases/tag/0.8.2)" in out
+    assert "The tag 0.8.2 is still on GitHub; --cleanup-tag removes it too" in out
+    rc, calls = _delete(("--delete", "release", "--tag", "0.8.2"))            # --tag names it just as well; no tag left: no note
+    assert _deleted(calls) and "still on GitHub" not in capsys.readouterr().out
+
+
+def test_delete_release_cleanup_tag_dry_run_and_json(capsys):
+    rc, calls = _delete(("--delete", "release", "--tag", "0.8.2", "--cleanup-tag"), tag_at=SHA)
+    assert _deleted(calls)[0][-1] == "--cleanup-tag" and "and its tag" in capsys.readouterr().out
+    rc, calls = _delete(("--delete", "release", "--tag", "0.8.2", "--dry-run"))
+    assert rc == 0 and not _deleted(calls) and "delete\trelease\t0.8.2\t" in capsys.readouterr().out
+    rc, calls = _delete(("--json", "--delete", "release", "--tag", "0.8.2", "--cleanup-tag"))
+    assert json.loads(capsys.readouterr().out) == {
+        "repo": "lateralblast/kopi", "tag": "0.8.2", "url": "https://github.com/lateralblast/kopi/releases/tag/0.8.2",
+        "draft": False, "dry_run": False, "deleted": True, "tag_deleted": True}
+
+
+def test_delete_release_needs_a_tag_that_exists(capsys):
+    rc, calls = _delete(("--delete", "release"))
+    assert rc == 1 and not _deleted(calls) and "name the release to delete" in capsys.readouterr().err
+    rc, calls = _delete(("--delete", "release", "--release", "9.9.9"), view=None)
+    assert rc == 1 and not _deleted(calls) and "no release 9.9.9 in lateralblast/kopi" in capsys.readouterr().err
+
+
+def test_release_accepts_a_tag_argument_and_delete_flags_are_checked(capsys):
+    rc, calls = _release(("--release", "v0.9.0"))                           # the same as --release --tag v0.9.0
+    assert _created(calls)[0][2] == "v0.9.0" and _created(calls)[0][_created(calls)[0].index("--notes") + 1].startswith("### Added")
+    for argv in (("--release", "1.0.0", "--tag", "2.0.0"), ("--cleanup-tag", "--release"),
+                 ("--delete", "release", "--tag", "1.0.0", "--draft"), ("--delete", "release", "--tag", "1", "--done", "x")):
+        with pytest.raises(SystemExit) as e:
+            cli.main(list(argv))
+        assert e.value.code == 2, argv
+
+
+def test_cleanup_tag_deletes_a_tag_whose_release_is_already_gone(capsys):
+    rc, calls = _delete(("--delete", "release", "--release", "0.8.2", "--cleanup-tag"), view=None, tag_at=SHA)
+    assert rc == 0 and not _deleted(calls) and _tag_deletes(calls) == [("api", "-X", "DELETE", "repos/lateralblast/kopi/git/refs/tags/0.8.2")]
+    assert "No release 0.8.2; deleted its tag" in capsys.readouterr().out
+    rc, calls = _delete(("--json", "--delete", "release", "--tag", "0.8.2", "--cleanup-tag"), view=None, tag_at=SHA)
+    data = json.loads(capsys.readouterr().out)
+    assert data["deleted"] is False and data["tag_deleted"] is True and data["url"] is None
+    rc, calls = _delete(("--delete", "release", "--tag", "0.8.2", "--cleanup-tag", "--dry-run"), view=None, tag_at=SHA)
+    assert rc == 0 and not _tag_deletes(calls) and "delete\ttag\t0.8.2" in capsys.readouterr().out
+
+
+def test_cleanup_tag_with_neither_release_nor_tag_is_an_error_and_plain_delete_still_needs_the_release(capsys):
+    rc, calls = _delete(("--delete", "release", "--tag", "9.9.9", "--cleanup-tag"), view=None, tag_at=None)
+    assert rc == 1 and not _tag_deletes(calls) and "no release 9.9.9" in capsys.readouterr().err
+    rc, calls = _delete(("--delete", "release", "--tag", "0.8.2"), view=None, tag_at=SHA)     # no --cleanup-tag: the tag is not touched
+    assert rc == 1 and not _tag_deletes(calls) and "no release 0.8.2" in capsys.readouterr().err

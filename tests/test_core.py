@@ -341,3 +341,41 @@ def test_a_version_with_several_headings_takes_the_latest_date_and_is_reported(c
         and "0.5.1 (2025-09-19, undated)" in err and "the latest date is used" in err
     cli.warn_duplicate_headings("## [1.0.0] - 2026-01-01\n- a\n")
     assert capsys.readouterr().err == ""
+
+
+def _quota_out(remaining, limit=5000, reset="2026-10-11T10:39:21Z"):
+    return json.dumps({"data": {"rateLimit": {"limit": limit, "remaining": remaining, "used": limit - remaining, "resetAt": reset}}})
+
+
+def test_parse_quota_gives_the_reset_time_in_minutes():
+    now = cli.datetime.datetime(2026, 10, 11, 10, 27, 21, tzinfo=cli.datetime.timezone.utc)
+    assert cli.parse_quota(_quota_out(755), now=now) == {
+        "limit": 5000, "remaining": 755, "used": 4245, "reset_at": "2026-10-11T10:39:21Z", "reset_in_minutes": 12}
+    assert cli.parse_quota(_quota_out(5000, reset="2026-10-11T09:00:00Z"), now=now)["reset_in_minutes"] == 0   # already past
+    with pytest.raises(ValueError):
+        cli.parse_quota("not json")
+
+
+def test_checkquota_reports_what_is_left_and_flags_a_low_quota(capsys):
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.run", return_value=_quota_out(755)) as run:
+        assert cli.main(["--checkquota"]) == 0
+    out = capsys.readouterr()
+    assert out.out.startswith("GraphQL quota: 755 of 5000 points left (4245 used); resets at 10:39 UTC (in ")
+    assert "Low:" not in out.out and "Using owner" not in out.err                      # no owner lookup for this
+    assert run.call_args.args[:3] == ("api", "graphql", "-f") and "rateLimit" in run.call_args.args[3]
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.run", return_value=_quota_out(163)):
+        cli.main(["--checkquota"])
+    assert "Low: reading a board costs about 0.7 points per item" in capsys.readouterr().out
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.run", return_value=_quota_out(0)):
+        cli.main(["--json", "--checkquota"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["remaining"] == 0 and data["low"] is True and data["limit"] == 5000 and data["reset_at"] == "2026-10-11T10:39:21Z"
+
+
+def test_checkquota_errors_are_clear_and_it_is_a_mode_of_its_own(capsys):
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.run", return_value="<html>"):
+        assert cli.main(["--checkquota"]) == 1
+    assert "could not read the GraphQL quota" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--checkquota", "--report"])
+    assert e.value.code == 2

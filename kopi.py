@@ -20,25 +20,38 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "1.0.8"
+__version__ = "1.0.9"
 
 
 class GhError(RuntimeError):
     pass
 
 
+QUOTA_QUERY = "{ rateLimit { limit remaining used resetAt } }"
+
+
+def parse_quota(stdout, now=None):
+    """{limit, remaining, used, reset_at, reset_in_minutes} from the output of the rateLimit query; ValueError, KeyError
+    or TypeError if it is not that."""
+    limit = json.loads(stdout)["data"]["rateLimit"]
+    reset = datetime.datetime.fromisoformat(limit["resetAt"].replace("Z", "+00:00"))
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return {"limit": limit.get("limit"), "remaining": limit["remaining"], "used": limit.get("used"),
+            "reset_at": reset.isoformat().replace("+00:00", "Z"),
+            "reset_in_minutes": max(0, round((reset - now).total_seconds() / 60))}
+
+
+def _reset_text(quota):
+    return f"{quota['reset_at'][11:16]} UTC (in {max(1, quota['reset_in_minutes'])} min)"
+
+
 def api_reset_time():
     """When a spent GraphQL budget resets, as "HH:MM UTC (in N min)", or None if the budget is not spent or cannot be read.
     The rateLimit query itself is still answered when nothing is left."""
     try:
-        proc = subprocess.run(["gh", "api", "graphql", "-f", "query={ rateLimit { remaining resetAt } }"],
-                              capture_output=True, text=True)
-        limit = json.loads(proc.stdout)["data"]["rateLimit"]
-        if limit["remaining"] > 0:
-            return None
-        reset = datetime.datetime.fromisoformat(limit["resetAt"].replace("Z", "+00:00"))
-        minutes = max(1, round((reset - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 60))
-        return f"{reset:%H:%M} UTC (in {minutes} min)"
+        proc = subprocess.run(["gh", "api", "graphql", "-f", f"query={QUOTA_QUERY}"], capture_output=True, text=True)
+        quota = parse_quota(proc.stdout)
+        return None if quota["remaining"] > 0 else _reset_text(quota)
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -2725,6 +2738,19 @@ def remote_tag_commit(slug, tag):
     return run("api", f"repos/{slug}/git/tags/{sha}", "--jq", ".object.sha").strip() if kind == "tag" else sha
 
 
+def cmd_checkquota(args):
+    """--checkquota: how much of the hourly GraphQL quota is left, and when it resets. Costs one point. Read-only."""
+    try:
+        quota = parse_quota(run("api", "graphql", "-f", f"query={QUOTA_QUERY}"))
+    except (ValueError, KeyError, TypeError) as e:
+        raise GhError(f"could not read the GraphQL quota: {e}")
+    low = quota["remaining"] < max(1, (quota["limit"] or 5000) // 10)
+    say(args, f"GraphQL quota: {quota['remaining']} of {quota['limit']} points left ({quota['used']} used); "
+        f"resets at {_reset_text(quota)}" + ("\nLow: reading a board costs about 0.7 points per item, so a big board needs "
+                                           "most of it. Wait for the reset before a large --import, --update or --report." if low else ""))
+    emit(args, {**quota, "low": low})
+
+
 def cmd_delete_release(args):
     """--delete release --tag TAG (or --release TAG): delete a GitHub release.
 
@@ -3284,6 +3310,8 @@ def build_parser():
     p.add_argument("--delete", choices=("release",), metavar="KIND",
                    help="delete a GitHub release (--delete release --tag TAG, or --delete release --release TAG); "
                         "the tag it was made from stays unless --cleanup-tag is given")
+    p.add_argument("--checkquota", action="store_true",
+                   help="show how much of the hourly GraphQL quota is left and when it resets (costs one point)")
     p.add_argument("--cleanup-tag", action="store_true",
                    help="with --delete release: also delete the release's git tag (or just the tag, if the release is already gone)")
     p.add_argument("--draft", action="store_true", help="with --release: create it as a draft")
@@ -3367,11 +3395,11 @@ def main(argv=None):
     modes = [args.init, args.do_import, args.update, args.diff, args.archive, args.dedupe, args.squash, args.restore, args.done, args.list, args.export,
              args.sync, args.start, args.move, args.close, args.report,
              args.rollup is not None, args.promote, args.promote_all, args.open, args.reopen, args.setup_dates,
-             args.backfill_dates, args.gantt, make_release, args.delete]
+             args.backfill_dates, args.gantt, make_release, args.delete, args.checkquota]
     if not (any(modes) or args.cmd):
-        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close / --report / --rollup / --promote / --promote-all / --open / --reopen / --setup-dates / --backfill-dates / --gantt / --release / --delete)")
+        parser.error("a command is required (or use --init / --import / --update / --diff / --archive / --dedupe / --squash / --restore / --done / --list / --export / --sync / --start / --move / --close / --report / --rollup / --promote / --promote-all / --open / --reopen / --setup-dates / --backfill-dates / --gantt / --release / --delete / --checkquota)")
     if sum(map(bool, modes)) > 1:
-        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move, --close, --report, --rollup, --promote, --promote-all, --open, --reopen, --setup-dates, --backfill-dates, --gantt, --release and --delete are mutually exclusive")
+        parser.error("--init, --import, --update, --diff, --archive, --dedupe, --squash, --restore, --done, --list, --export, --sync, --start, --move, --close, --report, --rollup, --promote, --promote-all, --open, --reopen, --setup-dates, --backfill-dates, --gantt, --release, --delete and --checkquota are mutually exclusive")
     if (args.body is not None or args.label) and not args.open:
         parser.error("--body and --label only apply to --open")
     if args.annotate and not (args.promote or args.promote_all):
@@ -3419,6 +3447,8 @@ def main(argv=None):
              else cmd_close_local)(args)
             return 0
         check_auth()
+        if args.checkquota:   # nothing to do with a project, so no owner lookup
+            return cmd_checkquota(args) or 0
         if not args.owner and args.config_data.get("owner"):
             args.owner = args.config_data["owner"]
             print(f"Using owner: {args.owner} (from {args.config or CONFIG_FILE})", file=sys.stderr)

@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 1.0.8
+Version: 1.0.9
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -82,6 +82,7 @@ cd ~/code/my-repo
 ./kopi.py --backfill-dates [--dry-run]                       # fill the missing Started / Completed dates (--import / --update do it too; --no-dates skips)
 ./kopi.py --gantt [releases|items] [--to FILE]               # draw the Roadmap as a Gantt chart (ROADMAP.md / .svg / .mmd)
 ./kopi.py --release [TAG] [--tag TAG] [--draft] [--dry-run]  # create a GitHub release at the last commit (notes from CHANGELOG.md)
+./kopi.py --checkquota                                       # how much of the hourly GraphQL quota is left, and when it resets
 ./kopi.py --delete release --tag TAG [--cleanup-tag] [--dry-run]   # delete a GitHub release (also: --delete release --release TAG)
 ./kopi.py --report [text|markdown]                           # progress summary of the project
 ./kopi.py --rollup [DIR ...]                                 # status counts across several repos' projects (or all open projects)
@@ -179,7 +180,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--open`: `{project, repo, dry_run, created: {title, url, number, item_id} | null}` (with `--local`: `{file, dry_run, created: {title, labels}}`); `--close`: `{repo, dry_run, closed: [{number, title, url}]}` (with `--local`: `{file, dry_run, closed: [{title, number?, url?}]}`); `--reopen`: `{repo, dry_run, reopened: [{number, title, url}], board: {project?, action}}` (`action` is `moved`, `added`, `unchanged` or `skipped`); `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}], annotated?}`; `--promote-all`: the same plus `failed: [{title, id, error}]`; `annotated` (with `--annotate`) is `[{title, number, entry}]`.
 - `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--dedupe`: `{project, dry_run, deleted}`.
 - `--import`, `--update`, `--done`, `--start` and `--move` also report `dates: [{title, field, date}]` when they set any; `--import` and `--update` likewise report `sections: [{title, section}]` when `[sections]` is on and values were set. `--setup-dates`: `{project, dry_run, created: [{field}], existing: [{field, type}]}`; `--backfill-dates`: `{project, dry_run, set: [{title, field, date}]}`.
-- `--gantt`: `{project, view, file, dry_run, changed, skipped, tasks: [{section, name, start, end, state}]}`; `--release`: `{repo, tag, target, subject, dry_run, draft, notes: "changelog" | "generated", existing, url}`; `--delete release`: `{repo, tag, url, draft, dry_run, deleted, tag_deleted}` (`url` is null and `deleted` false when only a tag was deleted).
+- `--gantt`: `{project, view, file, dry_run, changed, skipped, tasks: [{section, name, start, end, state}]}`; `--release`: `{repo, tag, target, subject, dry_run, draft, notes: "changelog" | "generated", existing, url}`; `--checkquota`: `{limit, remaining, used, reset_at, reset_in_minutes, low}`; `--delete release`: `{repo, tag, url, draft, dry_run, deleted, tag_deleted}` (`url` is null and `deleted` false when only a tag was deleted).
 - `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, history: {entries, releases}, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
 
 ### Limits
@@ -206,7 +207,7 @@ Progress is never printed with `--json`, so a script's stderr stays quiet as wel
 
 `kopi` reads up to 1000 projects, 5000 board items and 5000 issues (and, separately, PRs) per repo. `gh` pages through results, so these are effectively "everything" for normal boards. If a lookup reaches its cap, `kopi` prints a warning on stderr rather than silently dropping the rest.
 
-**API budget.** GitHub allows 5000 GraphQL points an hour. Writes are cheap (kopi batches 20 into one request, about a point each), but reading the board is not: listing items costs about 0.7 points each, so one read of a 573-item board is about 400 points and `--update`, `--diff`, `--report` and `--sync` each read it at least once (`--report` reads it once, not twice). A repo with hundreds of changelog entries can therefore use up the hour with a handful of commands. When the budget runs out kopi says when it resets (`resets at 10:39 UTC (in 4 min)`); an `--import` that hits the limit only after its writes has still imported everything, so run `--diff` after the reset to check. `gh api graphql -f query='{ rateLimit { remaining resetAt } }'` shows the budget.
+**API budget.** GitHub allows 5000 GraphQL points an hour. Writes are cheap (kopi batches 20 into one request, about a point each), but reading the board is not: listing items costs about 0.7 points each, so one read of a 573-item board is about 400 points and `--update`, `--diff`, `--report` and `--sync` each read it at least once (`--report` reads it once, not twice). A repo with hundreds of changelog entries can therefore use up the hour with a handful of commands. When the budget runs out kopi says when it resets (`resets at 10:39 UTC (in 4 min)`); an `--import` that hits the limit only after its writes has still imported everything, so run `--diff` after the reset to check. `kopi --checkquota` shows what is left (`GraphQL quota: 755 of 5000 points left (4245 used); resets at 10:39 UTC (in 12 min)`, with a warning below 10%, and `--json` gives `{limit, remaining, used, reset_at, reset_in_minutes, low}`); it costs one point and needs no project or repo. Check it before a large `--import`, `--update` or `--report`.
 
 ## Projects
 

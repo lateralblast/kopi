@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-10-11
+
+### Added
+- `--checkquota` shows how much of the hourly GraphQL quota is left and when it resets (`GraphQL quota: 755 of 5000 points left (4245 used); resets at 10:39 UTC (in 12 min)`), with a warning once less than a tenth is left, since reading a board costs about 0.7 points per item. It costs one point and needs no project or repo (so no owner lookup). `--json` prints `{limit, remaining, used, reset_at, reset_in_minutes, low}`. Documented in `README.md`.
+
 ## [1.0.8] - 2026-10-11
 
 ### Changed

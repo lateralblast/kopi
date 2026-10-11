@@ -7,6 +7,7 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] `--checkquota` shows the GraphQL quota left and when it resets, with tests.
 - [x] Fix from importing `manx` (193 entries): versions with several release headings are reported and take the latest date, with a test.
 - [x] Fixes from importing `guige` (573 entries): the settle wait polls the item count instead of re-listing the board (it used the hourly API budget), a failed wait is a warning, the rate-limit error gives the reset time, and `--report` reads the board once, with tests.
 - [x] Fixes from importing `ussuri` (120 changelog entries, no `TODO.md`): same-day releases in `--gantt` sorted by version number, and a clearer `--report` for a board with no tracked work, with tests.

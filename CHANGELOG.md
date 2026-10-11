@@ -7,6 +7,16 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-10-11
+
+### Changed
+- `--report` on a board with no tracked work (a changelog-only history, such as `ussuri`) says `Tracked work: none yet` instead of `no work items yet (0 done, 0 in progress, 0 todo)`; the counts are shown only when there is something to count.
+
+## [1.0.3] - 2026-10-11
+
+### Fixed
+- `--gantt` ordered the releases of one day as text, so a repo with a version component above 9 got a backwards range such as `v1.0.10 to v1.0.9 (8 releases)` (found importing `ussuri`). They are now ordered by version number: `v1.0.9 to v1.0.10`.
+
 ## [1.0.2] - 2026-10-11
 
 ### Changed

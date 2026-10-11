@@ -7,6 +7,7 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] Fixes from importing `ussuri` (120 changelog entries, no `TODO.md`): same-day releases in `--gantt` sorted by version number, and a clearer `--report` for a board with no tracked work, with tests.
 - [x] Checked the Mermaid chart (and `ROADMAP.md` output) in GitHub's renderer, and the SVG: both look fine.
 - [x] Created the Roadmap view (layout Roadmap, Started and Completed as the date fields) for the `kopi` and `druid` projects in the web UI; it looks fine.
 - [x] `--cleanup-tag` deletes a tag whose release is already gone, with tests; used to remove the leftover `0.8.2` tag.

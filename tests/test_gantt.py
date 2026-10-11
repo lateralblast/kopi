@@ -161,3 +161,17 @@ def test_gantt_file_name_gets_a_hint_about_to(capsys):
     assert e.value.code == 2
     err = capsys.readouterr().err
     assert "use --to road.svg" in err
+
+
+def test_same_day_releases_are_ordered_by_version_number_not_text():
+    def rel(version, day):
+        return {"id": version, "title": f"[{version}] Thing", "status": "Done", "started": day, "completed": day}
+    mock_args = mock.Mock(config_data={})
+    # two release days: one bar per version, oldest version first (1.0.9 before 1.0.10 although "1.0.10" < "1.0.9" as text)
+    board = [rel("1.0.10", "2026-09-01"), rel("1.0.9", "2026-09-01"), rel("1.0.11", "2026-09-01"), rel("1.1.0", "2026-09-02")]
+    tasks, _ = cli.gantt_tasks(board, "releases", mock_args, TODAY)
+    assert [t["name"] for t in tasks] == ["v1.0.9", "v1.0.10", "v1.0.11", "v1.1.0"]
+    # three release days: same-day releases share a bar, and its label runs from the lowest version to the highest
+    board.append(rel("1.2.0", "2026-09-03"))
+    tasks, _ = cli.gantt_tasks(board, "releases", mock_args, TODAY)
+    assert [t["name"] for t in tasks] == ["v1.0.9 to v1.0.11 (3 releases)", "v1.1.0", "v1.2.0"]

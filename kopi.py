@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "1.0.2"
+__version__ = "1.0.4"
 
 
 class GhError(RuntimeError):
@@ -2154,13 +2154,14 @@ def _n(count, noun):
 def render_report(r, markdown=False):
     """The --report text (plain or Markdown) for build_report data."""
     c, p = r["counts"], r["project"]
-    pct = f"{r['percent_done']}% done" if r["percent_done"] is not None else "no work items yet"
+    pct = f"{r['percent_done']}% done" if r["percent_done"] is not None else "none yet"
     shipped = r["history"]["entries"]
     h = (lambda t: f"## {t}") if markdown else (lambda t: t + ":")
     bullet = "- " if markdown else "  - "
     out = [f"# {p['title']} (project #{p['number']})" if markdown else f"Project #{p['number']}: {p['title']}", p["url"] or "", ""]
-    out += [h("Progress"), f"Tracked work: {pct} ({c['done']} done, {c['in_progress']} in progress, {c['todo']} todo"
-            + (f", {c['other']} without a status" if c["other"] else "") + ")"]
+    tracked = c["done"] + c["in_progress"] + c["todo"] + c["other"]
+    out += [h("Progress"), f"Tracked work: {pct}" + (f" ({c['done']} done, {c['in_progress']} in progress, {c['todo']} todo"
+            + (f", {c['other']} without a status" if c["other"] else "") + ")" if tracked else "")]
     if shipped:   # a changelog is the record of what shipped, so it is not folded into the percentage
         out.append(f"Shipped: {_n(shipped, 'changelog entry').replace('entrys', 'entries')} in {_n(r['history']['releases'], 'release')}")
     out.append("")
@@ -2441,7 +2442,7 @@ def gantt_tasks(items, view, args, today):
             active.append({"section": "In progress", "name": title, "start": start, "end": max(start, today), "state": "active"})
         else:
             skipped += 1
-    ordered = sorted(releases.items(), key=lambda kv: (max(e["end"] for e in kv[1]), kv[0]))
+    ordered = sorted(releases.items(), key=lambda kv: (max(e["end"] for e in kv[1]), version_key(kv[0])))
     tasks = []
     if view == "releases":
         by_date = {}  # versions released on the same day share one bar

@@ -62,7 +62,7 @@ def test_report_without_files_or_work(tmp_path, monkeypatch, capsys):
                     if a[1] == "list" else {"items": []}):
         assert cli.main(["--report"]) == 0
     out = capsys.readouterr().out
-    assert "no work items yet" in out and "not compared" in out
+    assert "Tracked work: none yet\n" in out and "not compared" in out
 
 
 def test_rollup_every_open_project_under_the_owner(capsys):

@@ -312,3 +312,58 @@ def test_import_dry_run_warns_about_similar_todos_on_stderr(tmp_path, monkeypatc
         cli.main(["--owner", "o", "--import", "--dry-run"])
     cap = capsys.readouterr()
     assert "possible duplicate TODO.md entries" in cap.err and "possible duplicate" not in cap.out
+
+
+def test_import_and_update_wait_for_the_listing_after_the_date_writes():
+    order = []
+    with mock.patch("kopi.wait_for_items", side_effect=lambda *a: order.append("wait")), \
+         mock.patch("kopi.sync_dates", side_effect=lambda *a: order.append("dates") or ([], [])):
+        _run_import([], argv=("--import",))
+        assert order == ["dates", "wait"]
+        order.clear()
+        _run_update(BOARD[:1], argv=("--update",))
+        assert order == ["dates", "wait"]
+
+
+def test_context_dependent_entries_are_recognised_and_warned_about(capsys):
+    for text in ("Neither is run by `--status`, which only reports that an update exists.",
+                 "Both were run for real on the host.", "It stops the dashboard first.", "Fix it as above."):
+        assert cli.context_dependent(text), text
+    for text in ("Items are created in batches.", "Verified live (deleted afterwards).", "Each bullet becomes an item."):
+        assert not cli.context_dependent(text), text
+    cli.warn_context_dependent("## [1.0.0] - 2026-01-01\n- Adds `--update`.\n- Neither is run by `--status`.\n", "- [ ] Both need a retest\n")
+    err = capsys.readouterr().err
+    assert "2 entries may not make sense on their own" in err and "[1.0.0] Neither is run by `--status`." in err and "Both need a retest" in err
+    cli.warn_context_dependent("## [1.0.0] - 2026-01-01\n- Adds `--update`.\n", "- [ ] Fine\n")
+    assert capsys.readouterr().err == ""
+
+
+def test_import_dry_run_warns_about_context_dependent_entries(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "CHANGELOG.md").write_text("## [0.1.0] - 2026-01-01\n- Adds things.\n- Both were run live.\n")
+    with mock.patch.object(cli, "fetch_linked", return_value=[]):
+        cli.main(["--owner", "o", "--import", "--dry-run"])
+    assert "1 entry may not make sense on their own" in capsys.readouterr().err
+
+
+def test_bold_markers_are_stripped_from_titles_but_kept_in_the_body():
+    assert cli.strip_emphasis("**Bold lead.** Then `**kwargs` and __this__ and a * star") == "Bold lead. Then `**kwargs` and this and a * star"
+    plan, _ = cli.build_plan("## [0.1.0] - 2026-01-01\n- **Added** a thing.\n", "- [ ] **The functions have no callers.** Delete them.\n- [ ] Plain\n")
+    assert plan == [("Done", "[0.1.0] Added a thing.", "**Added** a thing."),
+                    ("Todo", "The functions have no callers. Delete them.", "**The functions have no callers.** Delete them."),
+                    ("Todo", "Plain", "")]
+
+
+def test_fetch_linked_says_once_that_issues_are_off_and_otherwise_stays_quiet(capsys):
+    def fake(kind, *a):
+        if kind == "issue":
+            raise cli.GhError("the 'o/r' repository has disabled issues")
+        return "[]"
+    with mock.patch("kopi.run", side_effect=fake):
+        assert cli.fetch_linked(("o", "r")) == []
+        assert capsys.readouterr().err == ""
+        cli.fetch_linked(("o", "r"), notice=True)
+        assert "note: issues are turned off for o/r" in capsys.readouterr().err
+    with mock.patch("kopi.run", side_effect=cli.GhError("boom")):
+        cli.fetch_linked(("o", "r"))
+        assert "warning: could not list issues for o/r: boom" in capsys.readouterr().err      # other failures still warn

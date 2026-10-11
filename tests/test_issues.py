@@ -442,3 +442,11 @@ def test_annotate_prefers_the_exact_entry_over_a_long_one_containing_its_words(t
     (tmp_path / "TODO.md").write_text("- [ ] Verified the live-draft promote works on the kopi board end to end, with the draft kept in place\n")
     assert cli.annotate_todo([{"title": "kopi-live-draft", "number": 5}]) == []
     assert cli.similar_length("alpha beta gamma", "alpha beta gamma delta") and not cli.similar_length("alpha beta", "alpha beta gamma delta epsilon zeta")
+
+
+def test_annotate_todo_adds_the_reference_to_the_last_line_of_a_wrapped_entry(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "TODO.md").write_text("- [ ] Write the reference section and an example\n  for every command.\n- [ ] Other\n")
+    done = cli.annotate_todo([{"title": "Write the reference section and an example for every command.", "number": 7}])
+    assert done[0]["entry"] == "Write the reference section and an example for every command. (#7)"
+    assert (tmp_path / "TODO.md").read_text() == "- [ ] Write the reference section and an example\n  for every command. (#7)\n- [ ] Other\n"

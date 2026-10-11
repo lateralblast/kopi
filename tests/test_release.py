@@ -198,3 +198,15 @@ def test_list_releases_local_reads_the_changelog_without_github(capsys):
         assert cli.main(["--json", "--list", "releases", "--local"]) == 0
     assert json.loads(capsys.readouterr().out)[0] == {"version": "0.9.0", "date": "2026-05-01", "entries": 2}
     assert not run.called and not auth.called                                    # --local needs no GitHub and no login
+
+
+def test_release_tag_prefix_from_config(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".kopi.toml").write_text('[release]\ntag_prefix = "v"\n')
+    rc, calls = _release(("--release",))
+    create = _created(calls)[0]
+    assert rc == 0 and create[2] == "v0.9.0" and create[create.index("--notes") + 1].startswith("### Added")   # notes still found
+    rc, calls = _release(("--release", "--tag", "0.8.0"))                    # an explicit --tag is used as typed
+    assert _created(calls)[0][2] == "0.8.0"
+    (tmp_path / ".kopi.toml").write_text("[release]\ntag_prefix = 1\n")
+    assert _release(("--release",))[0] == 1 and "release.tag_prefix must be a str" in capsys.readouterr().err

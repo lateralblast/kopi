@@ -20,7 +20,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-__version__ = "0.8.8"
+__version__ = "0.9.8"
 
 
 class GhError(RuntimeError):
@@ -164,10 +164,12 @@ def board_items(args, number):
 
 
 CONFIG_FILE = ".kopi.toml"
-CONFIG_KEYS = {"owner": str, "project": str, "status": dict, "sources": dict, "comments": dict, "repos": list, "dates": dict}
+CONFIG_KEYS = {"owner": str, "project": str, "status": dict, "sources": dict, "comments": dict, "repos": list, "dates": dict, "sections": dict, "release": dict}
 SOURCES_KEYS = {"code_comments": bool, "releases": bool}
 COMMENTS_KEYS = {"tags": list, "include": list, "exclude": list}
 DATES_KEYS = {"started": str, "completed": str, "enabled": bool}
+SECTIONS_KEYS = {"enabled": bool, "field": str}
+RELEASE_KEYS = {"tag_prefix": str}
 
 
 def _toml_value(raw):
@@ -255,7 +257,8 @@ def load_config(path, required=False):
             print(f"warning: {path}: unknown setting {key!r} ignored", file=sys.stderr)
         elif not isinstance(value, CONFIG_KEYS[key]):
             raise GhError(f"{path}: {key} must be a {CONFIG_KEYS[key].__name__}")
-    for table, known in (("sources", SOURCES_KEYS), ("comments", COMMENTS_KEYS), ("dates", DATES_KEYS)):
+    for table, known in (("sources", SOURCES_KEYS), ("comments", COMMENTS_KEYS), ("dates", DATES_KEYS), ("sections", SECTIONS_KEYS),
+                         ("release", RELEASE_KEYS)):
         for key, value in (cfg.get(table) or {}).items():
             if key not in known:
                 print(f"warning: {path}: unknown setting {table}.{key} ignored", file=sys.stderr)
@@ -415,23 +418,65 @@ def similar(a, b, threshold=0.4):
     return overlap(a, b) >= threshold
 
 
+# `## [1.2.3] - 2026-01-31` (Keep a Changelog) or `## 1.2.3 - 2026-01-31` / `## v1.2.3 (2026-01-31)`; the date is optional
+CHANGELOG_HEADING = re.compile(r"##[ \t]+(?:\[([^\]]+)\]|v?(\d+\.\d+\.\d+[^\s]*|Unreleased))"
+                               r"(?:[ \t]*(?:[-\u2013\u2014(])[ \t]*(\d{4}-\d{2}-\d{2}))?")
+
+
+def changelog_heading(line):
+    """(version, date or None) if `line` is a changelog release heading, else None."""
+    m = CHANGELOG_HEADING.match(line)
+    return (m.group(1) or m.group(2), m.group(3)) if m else None
+
+
+def bullet_blocks(lines):
+    """[(first, last)] line indexes of each top-level `- ` bullet and the indented lines that continue (wrap) it."""
+    blocks, i = [], 0
+    while i < len(lines):
+        if lines[i].startswith("- "):
+            j = i
+            while j + 1 < len(lines) and re.match(r"[ \t]+(?![-*+] |\d+[.)] )\S", lines[j + 1]):
+                j += 1
+            blocks.append((i, j))
+            i = j + 1
+        else:
+            i += 1
+    return blocks
+
+
+def bullet_text(lines, first, last):
+    """The bullet's text on one line: its first line without the `- `, then each wrapped line, joined by spaces."""
+    return " ".join([lines[first][2:].strip()] + [l.strip() for l in lines[first + 1:last + 1]])
+
+
 def parse_changelog(text):
-    """[(version, entry)] for every bullet under a `## [version]` heading, in file order."""
-    items, version = [], None
-    for line in text.splitlines():
-        m = re.match(r"## \[(.+?)\]", line)
-        if m:
-            version = m.group(1)
-        elif version and line.startswith("- "):
-            items.append((version, line[2:].strip()))
+    """[(version, entry)] for every bullet under a release heading, in file order (a wrapped bullet is one entry)."""
+    lines, items, version = text.splitlines(), [], None
+    blocks = dict(bullet_blocks(lines))
+    for n, line in enumerate(lines):
+        heading = changelog_heading(line)
+        if heading:
+            version = heading[0]
+        elif version and n in blocks:
+            items.append((version, bullet_text(lines, n, blocks[n])))
     return items
 
 
 def parse_todo(text):
-    """[(status, text)] for every checkbox line; [ ] Todo, [~] In Progress, [x] Done."""
+    """[(status, text)] for every checkbox bullet; [ ] Todo, [~] In Progress, [x] Done (a wrapped bullet is one entry)."""
     names = {" ": "Todo", "~": "In Progress", "x": "Done"}
-    return [(names[m.group(1).lower()], m.group(2).strip())
-            for m in re.finditer(r"^- \[([ ~xX])\] (.+)$", text, re.M)]
+    lines, out = text.splitlines(), []
+    for first, last in bullet_blocks(lines):
+        m = re.match(r"\[([ ~xX])\] (.+)$", bullet_text(lines, first, last))
+        if m:
+            out.append((names[m.group(1).lower()], m.group(2).strip()))
+    return out
+
+
+def strip_emphasis(text):
+    """`text` without Markdown bold markers (`**x**`, `__x__`), which show up as stray asterisks in a board title.
+    Code spans are left alone, so `**kwargs` in backticks survives."""
+    return re.sub(r"(`[^`]*`)|(\*\*|__)(.+?)\2", lambda m: m.group(1) or m.group(3), text)
 
 
 def _title(text, limit=100):
@@ -448,28 +493,61 @@ def build_plan(changelog, todo, linked=()):
     entries = parse_changelog(changelog)
     plan, skipped = [], []
     for version, text in reversed(entries):
-        title = _title(f"[{version}] {text}")
+        title = _title(f"[{version}] {strip_emphasis(text)}")
         plan.append(("Done", title, text if title != f"[{version}] {text}" else ""))
     for status, text in parse_todo(todo):
         if any(similar(text, t) for _, t, _ in linked) or \
                 (status == "Done" and any(similar(text, e) for _, e in entries)):
             skipped.append(text)
             continue
-        title = _title(text)
+        title = _title(strip_emphasis(text))
         plan.append((status, title, text if title != text else ""))
     return plan, skipped
 
 
+def _lead(text, n=8):
+    """The first `n` significant words of `text`, in order (stop words dropped, plurals folded as in _words)."""
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    words = [w[:-1] if w.endswith("s") and len(w) > 3 else w for w in words if w not in STOPWORDS and len(w) > 1]
+    return words[:n]
+
+
 def similar_todos(todo, threshold=0.5, min_words=4):
-    """[(a, b)] pairs of open TODO.md entries that share at least `threshold` of their words, so likely repeats
-    can be reviewed. Advisory only: nothing is merged or skipped. Entries under `min_words` words are ignored."""
-    open_ = [t for st, t in parse_todo(todo) if st != "Done" and len(_words(t)) >= min_words]
-    return [(a, b) for i, a in enumerate(open_) for b in open_[i + 1:] if overlap(a, b) >= threshold]
+    """[(a, b)] pairs of open TODO.md entries that read like the same task written twice: they start with the same
+    word and share at least `threshold` of their first eight significant words. Only the lead-in is compared, since
+    long, wrapped entries share common words without being repeats. Advice only: nothing is merged or skipped.
+    Entries under `min_words` words are ignored."""
+    open_ = [(t, _lead(t)) for st, t in parse_todo(todo) if st != "Done" and len(_words(t)) >= min_words]
+    return [(a, b) for i, (a, la) in enumerate(open_) for b, lb in open_[i + 1:]
+            if la[0] == lb[0] and len(set(la) & set(lb)) / min(len(set(la)), len(set(lb))) >= threshold]
 
 
 def warn_similar_todos(todo):
     for a, b in similar_todos(todo):
         print(f"warning: possible duplicate TODO.md entries:\n  {_title(a)}\n  {_title(b)}", file=sys.stderr)
+
+
+CONTEXT_START = re.compile(r"(neither|both|it|its|they|them|their|these|those|also|then|and|but|which|the same)\b", re.I)
+CONTEXT_WORDS = re.compile(r"\b(the above|as above|the previous (?:one|step|entry)|previously mentioned)\b", re.I)
+
+
+def context_dependent(text):
+    """True if an entry reads as a continuation of the one before it ("Neither is run by ...", "Both were run ...",
+    "as above"), so as a board item on its own it would mean nothing. A heuristic, used only to warn."""
+    return bool(CONTEXT_START.match(text) or CONTEXT_WORDS.search(text))
+
+
+def warn_context_dependent(changelog, todo, limit=5):
+    """Warn on stderr about changelog and TODO entries that probably only make sense next to the entry before them."""
+    found = [f"[{v}] {e}" for v, e in parse_changelog(changelog) if context_dependent(e)]
+    found += [t for st, t in parse_todo(todo) if context_dependent(t)]
+    if found:
+        print(f"warning: {_n(len(found), 'entry').replace('entrys', 'entries')} may not make sense on their own as board items "
+              "(they read as a continuation of the entry before):", file=sys.stderr)
+        for text in found[:limit]:
+            print(f"  {_title(text)}", file=sys.stderr)
+        if len(found) > limit:
+            print(f"  ... and {len(found) - limit} more", file=sys.stderr)
 
 
 def _read(path):
@@ -483,20 +561,21 @@ def _read(path):
 SOURCE_FILES = ("CHANGELOG.md", "TODO.md")
 
 
-def load_sources(args):
+def load_sources(args, notice=False):
     """(changelog, todo, linked) for --import/--update. With args.only (one file given), only that file is read
     and issues/PRs are skipped."""
     only = getattr(args, "only", None)
     changelog = "" if only == "TODO.md" else _read("CHANGELOG.md")
     todo = "" if only == "CHANGELOG.md" else _read("TODO.md")
-    return changelog, todo, [] if only else fetch_linked(git_repo())
+    return changelog, todo, [] if only else fetch_linked(git_repo(), notice)
 
 
-def fetch_linked(repo):
+def fetch_linked(repo, notice=False):
     """[(status, title, url)] for the repo's issues and PRs, mapped to project statuses.
 
     Open issue -> Todo, closed issue -> Done, open PR -> In Progress, merged PR -> Done.
-    Closed-unmerged PRs are skipped. A failed lookup is a warning, not an error.
+    Closed-unmerged PRs are skipped. A failed lookup is a warning, not an error. A repo with issues turned off is
+    an ordinary state, not a failure: it is noted once, by `notice` (--import), and otherwise passed over quietly.
     """
     if not repo:
         return []
@@ -509,7 +588,11 @@ def fetch_linked(repo):
             rows = json.loads(run(kind, "list", "--repo", slug, "--state", "all", "--limit", str(LINKED_LIMIT),
                                   "--json", "number,title,state,url"))
         except GhError as e:
-            print(f"warning: could not list {kind}s for {slug}: {e}", file=sys.stderr)
+            if "disabled issues" in str(e):
+                if notice:
+                    print(f"note: issues are turned off for {slug}; importing the files and pull requests only", file=sys.stderr)
+            else:
+                print(f"warning: could not list {kind}s for {slug}: {e}", file=sys.stderr)
             continue
         _warn_if_full(f"the {kind} list for {slug}", len(rows), LINKED_LIMIT)
         linked += [(mapping[r["state"]], r["title"], r["url"]) for r in rows if r["state"] in mapping]
@@ -727,7 +810,8 @@ SETTLE_TIMEOUT, SETTLE_INTERVAL = 30, 2
 def wait_for_items(args, number, ids):
     """Poll item-list until every new item id is listed, so an immediate re-run sees them.
 
-    GitHub's listing lags after writes; without this a second --update can re-add the same items.
+    GitHub's listing lags after writes; without this a second --update can re-add the same items. Callers run it
+    after their other writes, so the lag has usually passed and the first poll is enough.
     Gives up after SETTLE_TIMEOUT seconds with a warning.
     """
     pending = set(ids)
@@ -766,8 +850,9 @@ def date_field_names(args):
 
 
 def changelog_release_dates(text):
-    """{version: "YYYY-MM-DD"} for the `## [version] - date` headings that carry a date."""
-    return {m.group(1): m.group(2) for m in re.finditer(r"^## \[([^\]]+)\]\s*-\s*(\d{4}-\d{2}-\d{2})", text, re.M)}
+    """{version: "YYYY-MM-DD"} for the release headings (`## [version] - date`, `## version - date`) that carry a date."""
+    headings = (changelog_heading(line) for line in text.splitlines())
+    return {h[0]: h[1] for h in headings if h and h[1]}
 
 
 def default_started(release_dates, completed):
@@ -790,9 +875,14 @@ def tag_date(tag):
     return _git_first_line("log", "-1", "--format=%cs", tag)
 
 
+TICK_PREFIX = 60
+
+
 def tick_date(text):
-    """Date (YYYY-MM-DD) of the first commit that put `- [x] text` into TODO.md, or None if no commit did."""
-    return _git_first_line("log", "--reverse", "--format=%cs", "-S- [x] " + text, "--", "TODO.md")
+    """Date (YYYY-MM-DD) of the first commit that put `- [x] text` into TODO.md, or None if no commit did.
+
+    Only the first TICK_PREFIX characters are searched for: a wrapped entry is one line here but several in the file."""
+    return _git_first_line("log", "--reverse", "--format=%cs", "-S- [x] " + text[:TICK_PREFIX], "--", "TODO.md")
 
 
 def linked_dates(slug):
@@ -925,6 +1015,74 @@ def sync_dates(args, number, items, changelog):
     return write_dates(args, number, items, changelog, writer=writer), created
 
 
+# --- Section field: the TODO.md heading each item sat under (opt-in: `[sections] enabled = true`) -----------------------
+DEFAULT_SECTION_FIELD = "Section"
+
+
+def sections_settings(args):
+    """(enabled, field name) from `[sections]` in .kopi.toml: off unless `enabled = true`; the field defaults to Section."""
+    cfg = (getattr(args, "config_data", None) or {}).get("sections") or {}
+    return bool(cfg.get("enabled")), cfg.get("field") or DEFAULT_SECTION_FIELD
+
+
+def todo_sections(text):
+    """{item title: heading} for every checkbox entry in TODO.md: the nearest `##`-or-deeper heading above it."""
+    lines, heading, out = text.splitlines(), None, {}
+    blocks = dict(bullet_blocks(lines))
+    for n, line in enumerate(lines):
+        m = re.match(r"#{2,6}\s+(.+?)\s*#*\s*$", line)
+        if m:
+            heading = m.group(1)
+        elif n in blocks and heading:
+            entry = re.match(r"\[[ ~xX]\] (.+)$", bullet_text(lines, n, blocks[n]))
+            if entry:
+                out[_title(strip_emphasis(entry.group(1).strip()))] = heading
+    return out
+
+
+def section_for(sections, title):
+    """The section of the entry a board item's title stands for: the same title, or one that is the start of it
+    (older boards cut a wrapped entry at its first line, and long titles end in an ellipsis)."""
+    if title in sections:
+        return sections[title]
+    start = strip_emphasis(title).rstrip("\u2026").strip()
+    if len(start) >= 20:
+        return next((sec for key, sec in sections.items() if key.startswith(start)), None)
+    return None
+
+
+def sync_sections(args, number, items, todo):
+    """After --import / --update, with `[sections] enabled = true`: create the Section text field if the board lacks it
+    and fill it in for the items (board-item dicts) whose TODO.md entry sits under a heading. A value already on an item
+    is never overwritten. Returns [{title, section}] for what was set."""
+    enabled, name = sections_settings(args)
+    sections = todo_sections(todo) if enabled else {}
+    if not sections:
+        return []
+    project_id = run_json("project", "view", str(number), *_owner(args))["id"]
+
+    def find():
+        nodes = (graphql(FIELDS_QUERY, id=project_id).get("data", {}).get("node") or {}).get("fields", {}).get("nodes", [])
+        return next((f for f in nodes if (f.get("name") or "").lower() == name.lower()), None)
+
+    field = find()
+    if not field:
+        run("project", "field-create", str(number), *_owner(args), "--name", name, "--data-type", "TEXT")
+        say(args, f"Created text field {name}")
+        field = find()
+    if not field or field.get("dataType") != "TEXT":
+        print(f"warning: field {name!r} is not a text field; sections skipped", file=sys.stderr)
+        return []
+    queue = [(i, sec) for i in items if not i.get(name.lower()) and (sec := section_for(sections, i["title"]))]
+    if queue:
+        progress(args, f"Setting {len(queue)} sections...")
+        mutate_batched(args, [
+            f"updateProjectV2ItemFieldValue(input: {{projectId: {_gql_str(project_id)}, itemId: {_gql_str(i['id'])}, "
+            f"fieldId: {_gql_str(field['id'])}, value: {{text: {_gql_str(sec)}}}}}) {{ projectV2Item {{ id }} }}"
+            for i, sec in queue], "set")
+    return [{"title": i["title"], "section": sec} for i, sec in queue]
+
+
 def stamp_dates(args, number, item, target):
     """After `--start` / `--done` / `--move`: Started today for In Progress; Completed today for Done, with Started
     defaulting to the previous changelog release's date if the item has none. Returns what was set."""
@@ -978,12 +1136,13 @@ def cmd_backfill_dates(args):
 
 def cmd_import(args):
     """Seed an empty project from CHANGELOG.md and TODO.md (draft items) plus the repo's issues and PRs."""
-    changelog, todo, linked = load_sources(args)
+    changelog, todo, linked = load_sources(args, notice=True)
     extras = load_extras(args, changelog)
     if not changelog and not todo and not linked and not extras:
         raise GhError("nothing to import: no CHANGELOG.md or TODO.md in the current directory, and no issues or PRs")
     plan, skipped = build_plan(changelog, todo, linked)
     warn_similar_todos(todo)
+    warn_context_dependent(changelog, todo)
     plan += extras
     total = len(plan) + len(linked)
     if args.dry_run:
@@ -1008,13 +1167,15 @@ def cmd_import(args):
     progress(args, f"Importing {total} items into project #{number}")
     created = create_items(args, info, [(t, b) for _, t, b in plan], [u for _, _, u in linked])
     set_statuses(args, info, list(zip(created, [st for st, *_ in plan + linked])))
-    wait_for_items(args, number, created)
     made = [{"id": i, "title": t, "status": st, "content": {"body": b}} for i, (st, t, b) in zip(created, plan)]
     made += [{"id": i, "title": t, "status": st, "content": {"url": u}} for i, (st, t, u) in zip(created[len(plan):], linked)]
     dates, fields = sync_dates(args, number, made, changelog)
-    say(args, f"Imported {total} items into project #{number}" + (f" ({len(dates)} dates set)" if dates else ""))
+    sections = sync_sections(args, number, made, todo)
+    wait_for_items(args, number, created)   # last: the date writes need only the ids, and give GitHub's listing time to catch up
+    say(args, f"Imported {total} items into project #{number}" + (f" ({len(dates)} dates set)" if dates else "")
+        + (f" ({len(sections)} sections set)" if sections else ""))
     emit(args, {"project": number, "dry_run": False, "imported": total, **({"dates": dates} if dates else {}),
-                **({"date_fields_created": fields} if fields else {})})
+                **({"date_fields_created": fields} if fields else {}), **({"sections": sections} if sections else {})})
 
 
 RANK = {"Todo": 0, "In Progress": 1, "Done": 2}
@@ -1045,7 +1206,6 @@ def sync_plan(args):
     if not changelog and not todo and not linked and not extras:
         raise GhError("nothing to compare: no CHANGELOG.md or TODO.md in the current directory, and no issues or PRs")
     plan, skipped = build_plan(changelog, todo)
-    warn_similar_todos(todo)
     project, _ = find_project(args)
     if not project:
         raise GhError(f"no project for this repo under {args.owner}; run --init or --import first")
@@ -1132,6 +1292,10 @@ def cmd_update(args):
     when the files or GitHub are ahead of the board. Never moves an item backwards.
     """
     p = sync_plan(args)
+    if getattr(args, "only", None) != "CHANGELOG.md":
+        warn_similar_todos(_read("TODO.md"))
+    warn_context_dependent(p.changelog if getattr(args, "only", None) != "TODO.md" else "",
+                           _read("TODO.md") if getattr(args, "only", None) != "CHANGELOG.md" else "")
     adds, link_adds, moves, number = p.adds, p.link_adds, p.moves, p.number
     report = {"project": number, "dry_run": bool(args.dry_run),
               "added": [_item(st, t) for st, t, _ in adds] + [_item(st, _title(t), u) for st, t, u in link_adds],
@@ -1150,23 +1314,28 @@ def cmd_update(args):
         return
     if not adds and not link_adds and not moves:
         dates, fields = sync_dates(args, number, p.items, p.changelog)
-        say(args, f"Project #{number} is up to date" + (f" ({len(dates)} dates set)" if dates else ""))
-        emit(args, {**report, **({"dates": dates} if dates else {}), **({"date_fields_created": fields} if fields else {})})
+        sections = sync_sections(args, number, p.items, _read("TODO.md"))
+        say(args, f"Project #{number} is up to date" + (f" ({len(dates)} dates set)" if dates else "")
+            + (f" ({len(sections)} sections set)" if sections else ""))
+        emit(args, {**report, **({"dates": dates} if dates else {}), **({"date_fields_created": fields} if fields else {}),
+                    **({"sections": sections} if sections else {})})
         return
     info = status_info(args, number, [st for st, *_ in adds + link_adds] + [new for _, _, new, _ in moves])
     progress(args, f"Updating project #{number}: {len(adds) + len(link_adds)} to add, {len(moves)} to move")
     created = create_items(args, info, [(t, b) for _, t, b in adds], [u for _, _, u in link_adds])
     set_statuses(args, info, list(zip(created, [st for st, *_ in adds + link_adds]))
                  + [(item["id"], new) for item, _, new, _ in moves])
-    wait_for_items(args, number, created)
     made = [{"id": i, "title": t, "status": st, "content": {"body": b}} for i, (st, t, b) in zip(created, adds)]
     made += [{"id": i, "title": t, "status": st, "content": {"url": u}} for i, (st, t, u) in zip(created[len(adds):], link_adds)]
     moved = {item["id"]: new for item, _, new, _ in moves}
     board = [{**i, "status": moved.get(i["id"], i.get("status"))} for i in p.items] + made   # every item, as it now stands
     dates, fields = sync_dates(args, number, board, p.changelog)
+    sections = sync_sections(args, number, board, _read("TODO.md"))
+    wait_for_items(args, number, created)
     say(args, f"Updated project #{number}: {len(adds) + len(link_adds)} added, {len(moves)} moved"
-        + (f", {len(dates)} dates set" if dates else ""))
-    emit(args, {**report, **({"dates": dates} if dates else {}), **({"date_fields_created": fields} if fields else {})})
+        + (f", {len(dates)} dates set" if dates else "") + (f", {len(sections)} sections set" if sections else ""))
+    emit(args, {**report, **({"dates": dates} if dates else {}), **({"date_fields_created": fields} if fields else {}),
+                **({"sections": sections} if sections else {})})
 
 
 def diff_summary(p):
@@ -1933,9 +2102,9 @@ def changelog_releases(text, limit=5):
     (the newest first, by Keep a Changelog convention). `date` is None when the heading has none."""
     out = []
     for line in text.splitlines():
-        m = re.match(r"## \[(.+?)\](?:\s*-\s*(\S+))?", line)
-        if m:
-            out.append({"version": m.group(1), "date": m.group(2), "entries": 0})
+        heading = changelog_heading(line)
+        if heading:
+            out.append({"version": heading[0], "date": heading[1], "entries": 0})
         elif out and line.startswith("- "):
             out[-1]["entries"] += 1
     return [r for r in out if r["entries"]][:limit]
@@ -1962,6 +2131,7 @@ def build_report(args):
     items = board_items(args, project["number"])
     work, counts = status_counts(items)
     tracked = counts["todo"] + counts["in_progress"] + counts["done"]
+    versions = {m.group(1) for m in (CHANGELOG_TITLE.match(i["title"]) for i in items) if m}
     kinds = [(i.get("content") or {}).get("type") for i in work]
     try:
         differences = sum(diff_summary(sync_plan(args))[2])
@@ -1969,6 +2139,7 @@ def build_report(args):
         differences = None
     return {"project": {"number": project["number"], "title": project["title"], "url": project.get("url")},
             "counts": counts, "percent_done": round(100 * counts["done"] / tracked) if tracked else None,
+            "history": {"entries": counts["history"], "releases": len(versions)},
             "by_type": {"drafts": kinds.count("DraftIssue"), "issues": kinds.count("Issue"),
                         "prs": kinds.count("PullRequest")},
             "in_progress": [i["title"] for i in work if i.get("status") == "In Progress"],
@@ -1984,11 +2155,15 @@ def render_report(r, markdown=False):
     """The --report text (plain or Markdown) for build_report data."""
     c, p = r["counts"], r["project"]
     pct = f"{r['percent_done']}% done" if r["percent_done"] is not None else "no work items yet"
+    shipped = r["history"]["entries"]
     h = (lambda t: f"## {t}") if markdown else (lambda t: t + ":")
     bullet = "- " if markdown else "  - "
     out = [f"# {p['title']} (project #{p['number']})" if markdown else f"Project #{p['number']}: {p['title']}", p["url"] or "", ""]
-    out += [h("Progress"), f"{pct}: {c['done']} done, {c['in_progress']} in progress, {c['todo']} todo"
-            + (f", {c['other']} without a status" if c["other"] else "") + f" ({c['history']} changelog entries in history)", ""]
+    out += [h("Progress"), f"Tracked work: {pct} ({c['done']} done, {c['in_progress']} in progress, {c['todo']} todo"
+            + (f", {c['other']} without a status" if c["other"] else "") + ")"]
+    if shipped:   # a changelog is the record of what shipped, so it is not folded into the percentage
+        out.append(f"Shipped: {_n(shipped, 'changelog entry').replace('entrys', 'entries')} in {_n(r['history']['releases'], 'release')}")
+    out.append("")
     t = r["by_type"]
     out += [h("Items"), f"{_n(t['drafts'], 'draft')}, {_n(t['issues'], 'issue')}, {_n(t['prs'], 'pull request')}", ""]
     for title, names in (("In progress", r["in_progress"]), ("Todo", r["todo"])):
@@ -2128,25 +2303,26 @@ def annotate_todo(promoted, dry_run=False):
     done = []
     ref = re.compile(r"\s*\(#(\d+|N)\)$")
     for item in promoted:
-        title, best, exact = item["title"], (0.0, None), False
-        for idx, line in enumerate(lines):
-            m = re.match(r"^- \[[ ~xX]\] (.+?)\s*$", line)
+        title, best, exact = item["title"], (0.0, None, None), False
+        for first, last in bullet_blocks(lines):
+            m = re.match(r"\[[ ~xX]\] (.+?)\s*$", bullet_text(lines, first, last))
             if not m:
                 continue
+            idx = last   # the reference goes on the entry's last line
             entry, annotated = ref.sub("", m.group(1)), bool(ref.search(m.group(1)))
             is_exact = entry == title or (title.endswith("…") and entry.startswith(title[:-1]))
             if is_exact and annotated:
-                exact, best = True, (0.0, None)  # already done: do not fall back to a similar, longer entry
+                exact, best = True, (0.0, None, None)  # already done: do not fall back to a similar, longer entry
                 break
             # exact text wins outright; otherwise a similar entry must also be of similar length, so a short title
             # cannot claim a long entry that merely contains its words
             score = 2.0 if is_exact else (overlap(entry, title) if similar_length(entry, title) else 0.0)
             if not annotated and score >= 0.75 and score > best[0]:
-                best = (score, idx)
+                best = (score, idx, entry)
         if best[1] is not None and not exact:
             suffix = f" (#{item['number'] or 'N'})"
             lines[best[1]] += suffix
-            done.append({"title": title, "number": item["number"], "entry": lines[best[1]][6:]})
+            done.append({"title": title, "number": item["number"], "entry": best[2] + suffix})
     if done and not dry_run:
         with open("TODO.md", "w") as f:
             f.write("\n".join(lines) + ("\n" if text.endswith("\n") else ""))
@@ -2432,9 +2608,17 @@ def latest_release_version(changelog):
 
 
 def changelog_section(changelog, version):
-    """The body of `## [version]` in a changelog (up to the next `## [`), stripped; "" if there is none."""
-    m = re.search(r"^## \[" + re.escape(version) + r"\][^\n]*\n(.*?)(?=^## \[|\Z)", changelog, re.M | re.S)
-    return m.group(1).strip() if m else ""
+    """The body of a version's release heading in a changelog (up to the next release heading), stripped; "" if none."""
+    body, inside = [], False
+    for line in changelog.splitlines():
+        heading = changelog_heading(line)
+        if heading:
+            if inside:
+                break
+            inside = heading[0] == version
+        elif inside:
+            body.append(line)
+    return "\n".join(body).strip()
 
 
 def head_commit():
@@ -2460,10 +2644,15 @@ def remote_tag_commit(slug, tag):
     return run("api", f"repos/{slug}/git/tags/{sha}", "--jq", ".object.sha").strip() if kind == "tag" else sha
 
 
+def release_tag_prefix(args):
+    """`[release] tag_prefix` from .kopi.toml (for example "v"), put before the changelog version to name the tag."""
+    return ((getattr(args, "config_data", None) or {}).get("release") or {}).get("tag_prefix", "")
+
+
 def cmd_release(args):
     """--release [--tag TAG]: create a GitHub release at the last commit (HEAD).
 
-    The tag is the newest changelog version number (`1.2.3`) unless --tag names another. The release's notes are the
+    The tag is the newest changelog version number (`1.2.3`, with `[release] tag_prefix` in front) unless --tag names another. The release's notes are the
     CHANGELOG.md section for that version (a leading `v` on the tag is ignored), or GitHub's generated notes if there
     is none; --draft makes it a draft.
     The commit must already be on GitHub (it is pushed first, not by kopi). A release that already exists is reported
@@ -2486,7 +2675,7 @@ def cmd_release(args):
         version = latest_release_version(changelog)
         if not version:
             raise GhError("no dated `## [version] - date` heading in CHANGELOG.md to name the release after; give a tag: --tag TAG")
-        tag = version
+        tag = release_tag_prefix(args) + version
     notes = changelog_section(changelog, version)
     report = {"repo": slug, "tag": tag, "target": sha, "subject": subject, "dry_run": bool(args.dry_run), "draft": bool(args.draft),
               "notes": "changelog" if notes else "generated", "existing": False, "url": None}
@@ -2618,16 +2807,18 @@ def cmd_squash(args):
     """
     args.only = "TODO.md"
     p = sync_plan(args)
-    text = _read("TODO.md")
+    lines = _read("TODO.md").split("\n")
     ticked = []
     for item, entry, status in p.ticks:
-        pattern = re.compile(r"^(- \[)[ ~](\] " + re.escape(entry) + r")[ \t]*$", re.M)
-        text, n = pattern.subn(r"\g<1>x\g<2>", text, count=1)
-        if n:
-            ticked.append({"title": entry, "from": status})
+        for first, last in bullet_blocks(lines):
+            m = re.match(r"\[[ ~]\] (.+)$", bullet_text(lines, first, last))
+            if m and m.group(1).strip() == entry:
+                lines[first] = "- [x]" + lines[first][5:]
+                ticked.append({"title": entry, "from": status})
+                break
     if ticked and not args.dry_run:
         with open("TODO.md", "w") as f:
-            f.write(text)
+            f.write("\n".join(lines))
     # ISSUES.md is a snapshot of the board's issues, so a board that has issues gets it refreshed (created if missing)
     rows = linked_rows(p.items, "issues")
     issues = write_linked_file(args, "issues", p.number, rows, strict=False) if rows else None

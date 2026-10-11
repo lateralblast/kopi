@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 0.8.8
+Version: 0.9.8
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -129,6 +129,13 @@ started = "Started"
 completed = "Completed"
 enabled = true                # false: never create or fill the date fields
 
+[release]                     # for --release
+tag_prefix = "v"              # tag = prefix + changelog version (v1.2.3); --tag TAG still wins
+
+[sections]                    # opt-in: a text field holding the TODO.md heading each item sat under
+enabled = true
+field = "Section"             # the field's name (this is the default)
+
 [comments]                    # tuning of the code-comment scan
 tags = ["TODO", "FIXME", "HACK"]
 include = ["src/*"]           # only these paths (globs on the path or file name)
@@ -136,6 +143,8 @@ exclude = ["*_generated.py"]  # in addition to the built-in exclusions
 ```
 
 - `project` is the title kopi looks for and, for `--init` / `--import`, creates.
+- `[release] tag_prefix` is put before the changelog version to name the tag `--release` creates (`v` gives `v1.2.3`); without it the tag is the plain version number. An explicit `--tag` is used as typed.
+- `[sections] enabled = true` makes `--import` / `--update` create a **Section** text field and fill it with the `##` heading each `TODO.md` entry sits under, so the board can be grouped by it. Existing values are never overwritten, changelog entries get none, and it is off by default.
 - `repos` is described under [`--rollup`](#roll-up-across-projects---rollup), `[sources]` and `[comments]` under [extra sources](#extra-sources---code-comments---releases).
 - Unknown settings are ignored with a warning on stderr, so a typo is visible; a value of the wrong type is an error.
 - It is TOML. On Python 3.11+ the standard `tomllib` reads it; on older Pythons a small built-in parser handles the subset used here (tables, strings, integers, booleans and arrays), so kopi still needs no dependencies. Inline tables are not supported there.
@@ -168,15 +177,15 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 - `--list`: an array of items, as under [`--list`](#listing-items---list); `--list releases`: `[{tag, name, date, latest, draft, prerelease, url}]` (with `--local`: `[{version, date, entries}]`).
 - `--done`, `--start` and `--move`: `{project, dry_run, moved: [{title, from, to}]}`; `--open`: `{project, repo, dry_run, created: {title, url, number, item_id} | null}` (with `--local`: `{file, dry_run, created: {title, labels}}`); `--close`: `{repo, dry_run, closed: [{number, title, url}]}` (with `--local`: `{file, dry_run, closed: [{title, number?, url?}]}`); `--reopen`: `{repo, dry_run, reopened: [{number, title, url}], board: {project?, action}}` (`action` is `moved`, `added`, `unchanged` or `skipped`); `--promote`: `{project, dry_run, promoted: [{title, id, number?, url?}], annotated?}`; `--promote-all`: the same plus `failed: [{title, id, error}]`; `annotated` (with `--annotate`) is `[{title, number, entry}]`.
 - `--archive`: `{project, dry_run, archived, skipped}`; `--restore`: `{project, dry_run, restored, failed}`; `--dedupe`: `{project, dry_run, deleted}`.
-- `--import`, `--update`, `--done`, `--start` and `--move` also report `dates: [{title, field, date}]` when they set any. `--setup-dates`: `{project, dry_run, created: [{field}], existing: [{field, type}]}`; `--backfill-dates`: `{project, dry_run, set: [{title, field, date}]}`.
+- `--import`, `--update`, `--done`, `--start` and `--move` also report `dates: [{title, field, date}]` when they set any; `--import` and `--update` likewise report `sections: [{title, section}]` when `[sections]` is on and values were set. `--setup-dates`: `{project, dry_run, created: [{field}], existing: [{field, type}]}`; `--backfill-dates`: `{project, dry_run, set: [{title, field, date}]}`.
 - `--gantt`: `{project, view, file, dry_run, changed, skipped, tasks: [{section, name, start, end, state}]}`; `--release`: `{repo, tag, target, subject, dry_run, draft, notes: "changelog" | "generated", existing, url}`.
-- `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
+- `--report`: `{project: {number, title, url}, counts: {todo, in_progress, done, other, history}, percent_done, history: {entries, releases}, by_type: {drafts, issues, prs}, in_progress, todo, releases: [{version, date, entries}], differences}`; `--rollup`: `{projects: [{owner, number, title, url, where, counts}], total, skipped: [{where, reason}]}`.
 
 ### Limits
 
 ### Speed and progress
 
-`--import` and `--update` write in batches: items are created, linked issues and PRs are added, and Status and date values are set 20 at a time in single GraphQL requests, so even a long history imports in under a minute (a 51-item repo took 52 seconds, much of it waiting for GitHub to list the new items so an immediate re-run does not add them twice). While they work they print progress on stderr, for example:
+`--import` and `--update` write in batches: items are created, linked issues and PRs are added, and Status and date values are set 20 at a time in single GraphQL requests, so even a long history imports in under a minute (a 51-item repo took 52 seconds). While they work they print progress on stderr, for example:
 
 ```
 Importing 51 items into project #7
@@ -221,12 +230,16 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 `kopi --import` seeds the repo's project (creating and linking it first if missing, as `--init` does) with draft items built from `CHANGELOG.md` and `TODO.md` in the current directory, plus the repo's issues and pull requests. It does nothing if the project already has items, unless you pass `--force`. Use `--dry-run` to print what would be imported without touching GitHub.
 
 - Each `CHANGELOG.md` bullet becomes a **Done** item titled `[version] text` (oldest first).
+- Release headings may be `## [1.2.3] - 2026-01-31` (Keep a Changelog), `## 1.2.3 - 2026-01-31` or `## v1.2.3 (2026-01-31)`; the date is optional. Every feature that reads the changelog (`--update`, dates, `--gantt`, `--release`, `--list releases --local`) accepts all three.
+- A bullet wrapped onto indented lines is one entry: its lines are joined with spaces. Nested bullets are ignored. `--squash` ticks the first line of a wrapped entry and `--annotate` puts the issue reference on its last line.
 - Each `TODO.md` checkbox becomes an item: `[ ]` is **Todo**, `[~]` is **In Progress**, `[x]` is **Done**.
 - `[x]` TODO items that duplicate a changelog entry (matched by shared words) are skipped.
 - Titles are cut to 100 characters; the full text goes in the item body.
 - The repo's issues and PRs (from `origin`) are added as real linked items, not drafts: open issue is **Todo**, closed issue **Done**, open PR **In Progress**, merged PR **Done**. Closed-unmerged PRs are skipped. If listing them fails, `kopi` warns and imports the files only.
 - `TODO.md` items that duplicate an issue or PR title are skipped, so the linked item wins.
-- Open `TODO.md` entries that share at least half their words (and have four or more) are reported on stderr as `possible duplicate TODO.md entries`, also by `--update`. It is advice only: nothing is merged or skipped, and `--dedupe` still removes exact-title copies only.
+- Open `TODO.md` entries (of four or more words) that start with the same word and share at least half of their first eight words are reported on stderr as `possible duplicate TODO.md entries`, also by `--update`. It is advice only: nothing is merged or skipped, and `--dedupe` still removes exact-title copies only.
+- Entries that read as a continuation of the one before them (they start with `Neither`, `Both`, `It`, `They`, `These`, `Also`, `Then`, ... or say `as above`) are reported on stderr too, since as a board item on their own they would mean nothing. Advice only; the entries are still imported.
+- Markdown bold (`**text**`, `__text__`) is removed from item titles (code spans are left alone); the body keeps the original text. A repo with issues turned off gets one `note:` from `--import` and nothing from the other commands.
 
 ### Updating the project from CHANGELOG.md, TODO.md, issues and PRs
 
@@ -236,7 +249,7 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 - A `TODO.md` item with no matching item is added as **Todo**, **In Progress** or **Done** according to its checkbox. Items match by identical title, or by very similar wording (75%+ shared words); each board item matches at most one file entry.
 - If an item already exists but is behind the file (for example Todo on the board, now `[x]` in `TODO.md`), it is moved forward rather than duplicated. Items are never moved backwards, and nothing is deleted, so items removed from the files stay on the board.
 - Completed entries (`[x]` in `TODO.md`, or any `CHANGELOG.md` entry) that match no board item exactly are also compared, at 60%+ shared words, with board items that are not yet Done (Todo or In Progress). A match moves that item to **Done** instead of adding a duplicate, so reworded items still get closed. Each board item is matched at most once, best pairs first.
-- GitHub's item listing can lag for a short time after writes. After adding items, `--update` and `--import` poll the listing (up to 30 seconds) until every new item appears, so an immediate re-run won't add them twice. If GitHub is still slow they print a warning; wait a little before running `--update` again.
+- GitHub's item listing can lag for a short time after writes. After adding items, `--update` and `--import` finish their other writes (such as the dates) and then poll the listing (up to 30 seconds) until every new item appears, so an immediate re-run won't add them twice. The dates are written first because they need only the new items' ids; the wait is then a few seconds. An import's time is mostly the writes themselves, about 0.13 seconds each (143 items took 91 seconds). If GitHub is still slow they print a warning; wait a little before running `--update` again.
 - Keeping an item's text unchanged when you tick it is still the most reliable way to match.
 - The repo's issues and PRs are matched to board items by URL. New ones are added as linked items (open issue **Todo**, closed issue **Done**, open PR **In Progress**, merged PR **Done**), and existing ones move forward when their state on GitHub does (for example an issue closed since the last run). A reopened issue is not moved back. Linked items never take part in title matching, so a changelog entry can't close one, and a new `TODO.md` item that duplicates an issue or PR title is left to the issue or PR.
 
@@ -562,7 +575,8 @@ Project #2: kopi
 https://github.com/orgs/lateralblast/projects/2
 
 Progress:
-79% done: 11 done, 0 in progress, 3 todo (50 changelog entries in history)
+Tracked work: 79% done (11 done, 0 in progress, 3 todo)
+Shipped: 50 changelog entries in 30 releases
 
 Items:
 13 drafts, 1 issue, 0 pull requests
@@ -577,7 +591,7 @@ Board vs files:
 29 differences (see --diff)
 ```
 
-- **Progress** counts work items only. The board's `[version] ...` changelog entries are history, not work, so they are listed separately and left out of the percentage. Items without a recognised status are counted as "without a status". Custom Status names are understood as for the other commands (see `--status-map`).
+- **Progress** counts work items only (**Tracked work**). The board's `[version] ...` changelog entries are history, not work, so they get their own **Shipped** line (entries and releases, shown only when there are some) and are left out of the percentage; a repo whose record is mostly a changelog no longer reads as "7% done". Items without a recognised status are counted as "without a status". Custom Status names are understood as for the other commands (see `--status-map`).
 - **Items** splits the work items into drafts, issues and pull requests; the In Progress and Todo items are listed (the first ten of each).
 - **Recent releases** are the newest five sections of `CHANGELOG.md` with their dates and number of entries.
 - **Board vs files** is the number of differences `--diff` would report, or "not compared" when there is no `CHANGELOG.md` or `TODO.md`.

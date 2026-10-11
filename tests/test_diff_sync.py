@@ -91,3 +91,31 @@ def test_sync_json_is_one_document(tmp_path, monkeypatch, capsys):
     assert sorted(x["from"] for x in data["squash"]["ticked"]) == ["In Progress", "Todo"]
     with pytest.raises(SystemExit):
         cli.main(["--sync", "--update"])  # modes stay mutually exclusive
+
+
+WRAPPED_TODO = ("# TODO\n\n## Open\n\n- [ ] Add a `--json` output flag that prints one document and keeps\n"
+                "  warnings on stderr.\n- [ ] Still open.\n")
+
+
+def test_squash_ticks_a_wrapped_entry_on_its_first_line(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "TODO.md").write_text(WRAPPED_TODO)
+    board = [{"id": "W1", "title": "Add a `--json` output flag that prints one document and keeps warnings on stderr.",
+              "status": "Done"},
+             {"id": "W2", "title": "Still open.", "status": "Todo"}]
+    rc, *_ = _run_update(board, argv=("--squash",), todo=WRAPPED_TODO)
+    assert rc == 0 and "1 TODO.md items ticked" in capsys.readouterr().out
+    assert (tmp_path / "TODO.md").read_text() == WRAPPED_TODO.replace("- [ ] Add a", "- [x] Add a")
+
+
+def test_diff_and_report_do_not_warn_about_similar_todos(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "TODO.md").write_text("- [ ] Start Ollama and the gateway at boot on this host\n"
+                                      "- [ ] Start Ollama and the Hermes gateway at boot as services\n")
+    board = [{"id": "S1", "title": "Start Ollama and the gateway at boot on this host", "status": "Todo"},
+             {"id": "S2", "title": "Start Ollama and the Hermes gateway at boot as services", "status": "Todo"}]
+    todo = (tmp_path / "TODO.md").read_text()
+    _run_update(board, argv=("--diff",), todo=todo)
+    assert "possible duplicate" not in capsys.readouterr().err
+    _run_update(board, argv=("--update", "--dry-run"), todo=todo)
+    assert "possible duplicate TODO.md entries" in capsys.readouterr().err

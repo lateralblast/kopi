@@ -63,10 +63,11 @@ class FakeGraphql:
     """Stands in for kopi.graphql: records the batched operations --import / --update send and answers them.
 
     `.created` is [(title, body)] of draft items, `.added` the [url]s of linked items, `.statuses` [(item id, option id)],
-    `.dates` [(item id, field id, date)]; `fields` are the date-field nodes the board reports."""
+    `.dates` [(item id, field id, date)], `.sections` [(item id, field id, text)]; `fields` are the date-field nodes the board reports."""
 
     def __init__(self, fields=()):
         self.fields, self.created, self.added, self.statuses, self.dates, self.queries = list(fields), [], [], [], [], []
+        self.sections = []
 
     def __call__(self, query, **variables):
         self.queries.append(query)
@@ -91,6 +92,10 @@ class FakeGraphql:
         for n, item, field, date in re.findall(r'a(\d+): updateProjectV2ItemFieldValue\(input: \{projectId: "[^"]*", itemId: "([^"]*)", '
                                              r'fieldId: "([^"]*)", value: \{date: "([^"]*)"', query):
             self.dates.append((item, field, date))
+            data[f"a{n}"] = {"projectV2Item": {"id": item}}
+        for n, item, field, text in re.findall(r'a(\d+): updateProjectV2ItemFieldValue\(input: \{projectId: "[^"]*", itemId: "([^"]*)", '
+                                             r'fieldId: "([^"]*)", value: \{text: ' + string, query):
+            self.sections.append((item, field, json.loads(text)))
             data[f"a{n}"] = {"projectV2Item": {"id": item}}
         return {"data": data}
 

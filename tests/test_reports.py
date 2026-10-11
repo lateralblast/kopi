@@ -35,6 +35,7 @@ def test_report_json(capsys):
     r = json.loads(capsys.readouterr().out)
     assert rc == 0 and r["project"]["number"] == 2
     assert r["counts"] == {"todo": 1, "in_progress": 1, "done": 2, "other": 1, "history": 1}  # history is not work
+    assert r["history"] == {"entries": 1, "releases": 1}
     assert r["percent_done"] == 50 and r["by_type"] == {"drafts": 3, "issues": 1, "prs": 1}
     assert r["in_progress"] == ["Draft doing"] and r["todo"] == ["An issue"]
     assert r["releases"] and r["releases"][0]["entries"] > 0 and isinstance(r["differences"], int)
@@ -43,7 +44,7 @@ def test_report_json(capsys):
 def test_report_text_and_markdown(capsys):
     _run_update(REPORT_BOARD, argv=("--report",))
     out = capsys.readouterr().out
-    assert "Project #2: kopi" in out and "50% done: 2 done, 1 in progress, 1 todo, 1 without a status" in out
+    assert "Project #2: kopi" in out and "Tracked work: 50% done (2 done, 1 in progress, 1 todo, 1 without a status)" in out
     assert "3 drafts, 1 issue, 1 pull request" in out and "In progress (1):\n  - Draft doing" in out
     _run_update(REPORT_BOARD, argv=("--report", "markdown"))
     md = capsys.readouterr().out
@@ -109,3 +110,13 @@ def test_squash_and_sync_json_report_the_issues_file(tmp_path, monkeypatch, caps
     assert json.loads(capsys.readouterr().out)["issues"] == {"file": "ISSUES.md", "changed": True, "skipped": None, "count": 3}
     _run_update(ISSUE_BOARD, argv=("--json", "--sync", "--dry-run"))
     assert json.loads(capsys.readouterr().out)["squash"]["issues"]["count"] == 3
+
+
+def test_report_keeps_shipped_history_apart_from_the_percentage(capsys):
+    board = [{"id": f"H{i}", "title": f"[0.1.{i % 3}] Thing {i}", "status": "Done"} for i in range(9)] + [
+        {"id": "T1", "title": "Open work", "status": "Todo"}]
+    _run_update(board, argv=("--report",))
+    out = capsys.readouterr().out
+    assert "Tracked work: 0% done (0 done, 0 in progress, 1 todo)\nShipped: 9 changelog entries in 3 releases" in out
+    _run_update([{"id": "T1", "title": "Open work", "status": "Todo"}], argv=("--report",))
+    assert "Shipped" not in capsys.readouterr().out          # nothing shipped: no line

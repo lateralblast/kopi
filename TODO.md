@@ -7,13 +7,17 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 - [ ] Create the Roadmap view for the `kopi` and `druid` projects in the web UI (layout Roadmap, Started and Completed as the date fields); the API cannot do it.
 - [ ] Check the Mermaid chart in the README (and a generated `ROADMAP.md`) in GitHub's renderer; it has only been checked against the syntax.
 - [ ] Decide what to do with the test release `0.8.2` (it points at a commit without `tests/`): keep it, move it, or delete it.
-- [ ] A `[release]` section in `.kopi.toml` (for example a default tag prefix such as `v`) so `--release` does not need `--tag v...` every time.
-- [ ] Make `--report` read better for a repo whose whole record is a changelog (it says "1 done" next to 50 changelog entries in history).
-- [ ] Speed up imports further: stop polling for up to 30 s after the writes, which is now the largest part of an import.
-- [ ] Changelog bullets that only make sense after the previous one ("Neither is run by ...", "Both were run ...") become context-free board items; decide whether to warn about them (found importing `havana`).
 
 ## Done
 
+- [x] `[sections]`: an opt-in Section text field holding the `TODO.md` heading of each item (the "prefix or label" question from `birman`), with tests; tried live on the `birman` board.
+- [x] A repo with issues turned off is noted once by `--import` instead of a warning on every command, with tests.
+- [x] Bold markers are stripped from item titles, with tests.
+- [x] Warn about changelog / TODO entries that only make sense after the previous one (found importing `havana`), with tests.
+- [x] Timed an import (143 items, 91 s): the settle wait is 3 s; the time is the writes (dates 38 s, drafts 21 s, statuses 19 s, about 0.13 s per mutation). `--import` / `--update` now wait after the date writes, with a test. Anything faster needs concurrent requests, which GitHub discourages for mutations, so it was not done.
+- [x] `[release] tag_prefix` in `.kopi.toml` for `--release`, with tests.
+- [x] `--report` shows tracked work and shipped changelog history on separate lines, with tests.
+- [x] Fixes from importing `birman`: changelog headings without brackets, wrapped (multi-line) bullets in `CHANGELOG.md` / `TODO.md`, and the similar-TODO warning limited to `--import` / `--update`, with tests.
 - [x] Fixes from importing `havana`: warn about similar open `TODO.md` entries, a bar per version in the releases Gantt when all releases share one or two days, a `--to` hint for `--gantt FILE`, and a readable colon in raw Mermaid output, with tests.
 - [x] `--list releases` (GitHub releases, or CHANGELOG.md versions with `--local`), with tests.
 - [x] Ran `kopi --sync` on the `kopi` board: 61 items added, 1 moved to Done, 108 dates set in 57 seconds (125 items, no duplicates), and `ISSUES.md` created.

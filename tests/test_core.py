@@ -218,3 +218,45 @@ def test_rate_limit_error_says_how_to_check_the_reset():
     with mock.patch("kopi.subprocess.run", return_value=proc), pytest.raises(cli.GhError) as exc:
         cli.run("project", "list")
     assert "rate limit exceeded" in str(exc.value) and "rateLimit { remaining resetAt }" in str(exc.value)
+
+
+PLAIN_CHANGELOG = """# Changelog
+
+## 0.4.0 - 2026-10-07
+
+### Added
+- `start_llama.py -m NAME` fetches and builds a model that is not under `models/` (new `model_fetch.py`:
+  catalogue, size estimates; `--yes`, `--no-fetch`).
+- Second thing.
+
+## v0.3.0 (2026-10-06)
+
+### Fixed
+- Older fix.
+
+## [0.2.0] - 2026-10-05
+
+- Bracketed one.
+"""
+
+
+def test_changelog_headings_without_brackets_are_recognised():
+    assert cli.parse_changelog(PLAIN_CHANGELOG) == [
+        ("0.4.0", "`start_llama.py -m NAME` fetches and builds a model that is not under `models/` (new `model_fetch.py`: "
+                  "catalogue, size estimates; `--yes`, `--no-fetch`)."),
+        ("0.4.0", "Second thing."), ("0.3.0", "Older fix."), ("0.2.0", "Bracketed one.")]
+    assert cli.changelog_release_dates(PLAIN_CHANGELOG) == {"0.4.0": "2026-10-07", "0.3.0": "2026-10-06", "0.2.0": "2026-10-05"}
+    assert cli.latest_release_version(PLAIN_CHANGELOG) == "0.4.0"
+    assert cli.changelog_section(PLAIN_CHANGELOG, "0.3.0") == "### Fixed\n- Older fix."
+    assert [(r["version"], r["date"], r["entries"]) for r in cli.changelog_releases(PLAIN_CHANGELOG)] == [
+        ("0.4.0", "2026-10-07", 2), ("0.3.0", "2026-10-06", 1), ("0.2.0", "2026-10-05", 1)]
+    assert cli.changelog_heading("## Added") is None and cli.changelog_heading("### 1.2.3") is None
+
+
+def test_wrapped_bullets_are_one_entry_in_changelog_and_todo():
+    todo = ("## Code\n\n- [ ] **Interleaved functions have no callers.** They now assert on rows that\n"
+            "  are not a multiple of 128.\n  - nested note\n- [x] Short one.\n\n- [~] Tail\n  wraps too\n").replace("\n", "\n")
+    assert cli.parse_todo(todo) == [
+        ("Todo", "**Interleaved functions have no callers.** They now assert on rows that are not a multiple of 128."),
+        ("Done", "Short one."), ("In Progress", "Tail wraps too")]
+    assert cli.bullet_blocks(["- a", "  b", "", "- c"]) == [(0, 1), (3, 3)]

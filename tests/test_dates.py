@@ -260,3 +260,10 @@ def test_backfill_dates_fills_gaps_without_overwriting(capsys):
     assert rc == 1 and "run --setup-dates first" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         cli.main(["--backfill-dates", "--update"])
+
+
+def test_tick_date_searches_only_a_prefix_so_wrapped_entries_are_found():
+    long = "word " * 40
+    with mock.patch.object(cli, "_git_first_line", return_value="2026-10-07") as g:
+        assert cli.tick_date(long) == "2026-10-07"
+    assert g.call_args.args[3] == "-S- [x] " + long[:cli.TICK_PREFIX]

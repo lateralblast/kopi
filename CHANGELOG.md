@@ -7,6 +7,56 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-10-11
+
+### Added
+- Opt-in **Section** field. With `[sections] enabled = true` in `.kopi.toml`, `--import` and `--update` create a text field (`[sections] field` renames it) and fill it with the `##` heading each `TODO.md` entry sits under, so a board can be grouped by it. A value already on an item is never overwritten, changelog entries get none, items imported by an older kopi (cut at their first line) are still matched, and `--json` reports `sections: [{title, section}]`. Tried live on the `birman` board (30 values). Documented in `README.md`.
+
+## [0.9.7] - 2026-10-11
+
+### Changed
+- A repo with issues turned off (`the 'o/r' repository has disabled issues`) no longer gets a warning from every command. `--import` says so once (`note: issues are turned off for o/r; importing the files and pull requests only`) and the others stay quiet; any other failure to list issues still warns.
+
+## [0.9.6] - 2026-10-11
+
+### Changed
+- Markdown bold (`**text**`, `__text__`) is stripped from the titles of imported items, so `**The functions have no callers.** ...` is no longer shown with asterisks. Code spans are left alone and the body keeps the original text. Boards imported before this still match (`--update` on `birman` adds nothing).
+
+## [0.9.5] - 2026-10-11
+
+### Added
+- `--import` and `--update` warn on stderr about changelog and `TODO.md` entries that read as a continuation of the one before (they start with `Neither`, `Both`, `It`, `They`, `These`, `Also`, `Then`, ... or say `as above`), since as board items on their own they mean nothing (`[1.0.0] Neither is run by --status ...` on `havana`). Advice only; the entries are still imported. Documented in `README.md`.
+
+## [0.9.4] - 2026-10-11
+
+### Changed
+- `--import` and `--update` write the dates before waiting for GitHub's item listing to catch up, instead of after, since the date writes need only the new items' ids. Timed on a 143-item import (91 seconds): the wait is 3 seconds of that, and the rest is the writes themselves at about 0.13 seconds per mutation (dates 38 s, creating drafts 21 s, statuses 19 s), so this is a small change, not a speed-up, and further gains would need concurrent requests (not done: GitHub asks clients to avoid them for mutations).
+
+## [0.9.3] - 2026-10-11
+
+### Added
+- `[release] tag_prefix` in `.kopi.toml` (for example `"v"`): `--release` names the tag prefix + the changelog version (`v1.2.3`) without `--tag v1.2.3` every time. An explicit `--tag` is used as typed, and the release notes are still found. Documented in `README.md`.
+
+## [0.9.2] - 2026-10-11
+
+### Changed
+- `--report` no longer reads as "7% done" for a repo whose record is a changelog. Progress is now `Tracked work: 7% done (2 done, 0 in progress, 28 todo)` and a separate `Shipped: 110 changelog entries in 66 releases` line (omitted when nothing has shipped). `--json` adds `history: {entries, releases}`; `counts` and `percent_done` are unchanged.
+
+## [0.9.1] - 2026-10-11
+
+### Fixed
+- The `possible duplicate TODO.md entries` warning (0.8.5) was also printed by `--diff`, `--report`, `--archive` and `--squash`, because they share the matcher. It now appears only for `--import` and `--update` (so `--sync` too), as documented. It also compares only the first eight words of each entry, and only entries starting with the same word, because long wrapped entries (see 0.9.0) shared enough common words to flag unrelated pairs (six pairs on `birman`, down to the one `TL1` pair).
+
+## [0.9.0] - 2026-10-11
+
+### Fixed
+- A `CHANGELOG.md` or `TODO.md` bullet wrapped onto indented lines was read as its first line only, so the board item (and its body) stopped mid-sentence. The lines are now joined into one entry (found importing `birman`, where 49 continuation lines across 30 items were dropped). `--squash` still ticks the entry (on its first line), `--annotate` adds the issue reference to its last line, and the commit-date lookup for a ticked entry searches only its first 60 characters, since the file wraps it. Documented in `README.md`.
+
+## [0.8.9] - 2026-10-11
+
+### Fixed
+- Changelog release headings without square brackets (`## 0.4.0 - 2026-10-07`, `## v0.4.0 (2026-10-07)`) are now recognised, as well as `## [0.4.0] - 2026-10-07`. Before, such a changelog imported no Done items and had no release dates, so `--gantt` had nothing to draw and `--release` and `--list releases --local` found no versions (found importing `birman`). Documented in `README.md`.
+
 ## [0.8.8] - 2026-10-11
 
 ### Changed

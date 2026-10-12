@@ -1,0 +1,34 @@
+# Example GitHub Actions workflow: keep the GitHub Project up to date when CHANGELOG.md / TODO.md change.
+#
+# Copy this to .github/workflows/kopi-update.yml in the repo that owns the project, and add a repository
+# secret named KOPI_TOKEN: a personal access token (classic) with the `project` and `repo` scopes, or a
+# fine-grained token with Projects read and write access. The workflow's own GITHUB_TOKEN cannot reach user or
+# organisation Projects (v2). It uses `--update`, which only changes the board (adds items, moves them forward,
+# fills dates); it never edits or commits files, so `--sync`'s TODO.md ticking is not available here.
+# Run `kopi --import` once by hand first: `--update` needs the project to exist.
+name: kopi-update
+on:
+  push:
+    branches: [main]                 # your default branch
+    paths: [CHANGELOG.md, TODO.md]
+  workflow_dispatch:
+
+# Two runs writing at once could each add the same new item, so they take turns, and a run is never
+# cancelled halfway through its writes.
+concurrency:
+  group: kopi-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install git+https://github.com/lateralblast/kopi.git
+      - name: Update the board
+        env:
+          GH_TOKEN: ${{ secrets.KOPI_TOKEN }}    # gh reads this; no `gh auth login` needed
+        run: kopi --update                       # add --owner ORG if the origin remote is a fork

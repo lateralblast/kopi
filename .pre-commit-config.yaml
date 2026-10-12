@@ -1,0 +1,8 @@
+# Stops a commit that contains a credential (tokens, keys, passwords) before it is made.
+# One-time setup:  pip install pre-commit && pre-commit install
+# Scan everything already committed:  pre-commit run gitleaks --hook-stage manual --all-files   (or: gitleaks git)
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

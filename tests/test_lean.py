@@ -92,3 +92,9 @@ def test_lean_items_carry_the_milestone(lean):
     lean.return_value = _page([_node("I2", "Bug", content=issue), _node("I3", "Plain", content=plain)])
     first, second = cli.board_items(ARGS, 7)
     assert first["milestone"] == {"title": "v2.0", "dueOn": "2026-12-01T00:00:00Z"} and "milestone" not in second
+
+
+def test_lean_drafts_carry_their_own_id(lean):
+    draft = {"__typename": "DraftIssue", "id": "DI_9", "title": "A draft", "body": "b"}
+    lean.return_value = _page([_node("I1", "A draft", content=draft)])
+    assert cli.board_items(ARGS, 7)[0]["content"]["id"] == "DI_9"

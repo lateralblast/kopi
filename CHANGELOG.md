@@ -7,6 +7,39 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-10-12
+
+### Changed
+- Parallel item creation was measured and rejected, and `RESEARCH.md` records why. With 2 or 3 requests at once, creating 300 drafts took 17 to 28 s against 37 s one at a time, but requests failed and the failed ones still created part of their items (246 to 288 of 300 landed), so a retry would duplicate items and no retry would lose them. Sequential creation never failed. Item creation therefore stays one request at a time (the README says why); the idempotent writes (statuses, dates, sections, bodies) stay parallel. No code change.
+
+## [1.2.6] - 2026-10-12
+
+### Added
+- `--report --to FILE` writes the report to a file (Markdown for a `.md` name or `markdown`), and `--report --post ISSUE` posts it as a Markdown comment on an issue of this repo. The comment carries a hidden `<!-- kopi-report -->` marker, so the next run edits it in place instead of adding another, and an unchanged report writes nothing. `--dry-run` writes no file and posts nothing (for `--post` it reads the comments and prints what it would do), and `--json` gains `file` and `posted: {issue, url, action}`. Verified on a temporary issue: dry run, first post, unchanged repeat, and an edit of a stale comment, always leaving one comment.
+
+## [1.2.5] - 2026-10-12
+
+### Added
+- `docs/kopi-update.yml`: an example GitHub Actions workflow that runs `kopi --update` when `CHANGELOG.md` or `TODO.md` change on the default branch (and on demand), so the board follows without a manual run. Board only (a runner cannot commit the files `--sync` edits), with a `concurrency` group that never cancels a run, since two overlapping runs could add the same item. The README has a section on it and the token it needs. Checked from a simulated runner (`--dry-run`, new venv, only `GH_TOKEN`), and a smoke test confirms a repeated `--update` adds nothing.
+
+## [1.2.4] - 2026-10-12
+
+### Added
+- `--update --refresh-bodies` (also with `--sync`) rewrites a draft item's body when the files give one and the board's differs: a grouped minor (`[changelog] group = "minor"`) that has grown since it was created, or a long entry's full text. It only touches exact-title drafts whose file side has a body (so notes you keep on a short item are safe), skips issues, PRs and items without a draft id, overwrites a body edited on the board (hence opt-in), and runs the writes in parallel like the other field updates. `--dry-run` lists them, `--json` adds `refreshed`. Verified live: a minor grown by one bullet was refreshed, and a second run found nothing.
+
+### Changed
+- Boards read through the slim query now carry each draft's own id (`content.id`), as `gh project item-list` does.
+
+## [1.2.3] - 2026-10-12
+
+### Added
+- `tests/test_smoke.py` and `tests/fakegh.py`: an end-to-end smoke suite that runs the real `kopi.py` as a subprocess against a stand-in `gh` on `PATH` (a small fake GitHub with projects, items, date fields, issues and PRs), so the subprocess layer is finally exercised: argument quoting, GraphQL string literals, JSON parsing of what `gh` prints, exit codes and the date-field path of a default `--import`. It covers import, `--diff --check`, `--update`, `--report --json`, `--checkquota`, linked issues and PRs, awkward titles (quotes, backslashes, unicode), a `gh` failure and a missing `gh`. It fails if kopi stops asking `gh` for JSON, which no mocked test noticed. No change to kopi itself.
+
+## [1.2.2] - 2026-10-12
+
+### Added
+- `--import` warns on stderr when a changelog with 300 or more entries would be imported whole (no `[changelog] last`, `since` or `group` in `.kopi.toml`): it says how many entries, releases and items there are, roughly how long the writes take, and points at those settings. `--import --dry-run` ends with the estimate (`about 2 minutes to write`) for 300 or more items, and its `--json` gains `estimated_seconds` (0.4 s per item, from the measured speed). The import itself is unchanged.
+
 ## [1.2.1] - 2026-10-12
 
 ### Changed

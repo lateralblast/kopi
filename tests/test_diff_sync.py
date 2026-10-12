@@ -138,3 +138,14 @@ def test_ci_example_workflow_runs_the_documented_check():
     assert workflow.count("name: kopi") == 1 and "pull_request:" in workflow
     readme = open(os.path.join(root, "README.md")).read()
     assert "docs/kopi-check.yml" in readme and "entry: kopi --diff --check" in readme
+
+
+def test_update_example_workflow_only_updates_the_board_and_never_overlaps():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    workflow = open(os.path.join(root, "docs", "kopi-update.yml")).read()
+    assert "run: kopi --update" in workflow and "GH_TOKEN: ${{ secrets.KOPI_TOKEN }}" in workflow
+    assert "--sync" not in workflow.split("jobs:")[1]                                  # a runner cannot commit the files --sync edits
+    assert "concurrency:" in workflow and "cancel-in-progress: false" in workflow      # overlapping runs could duplicate items
+    assert "paths: [CHANGELOG.md, TODO.md]" in workflow and "name: kopi-update" in workflow
+    readme = open(os.path.join(root, "README.md")).read()
+    assert "docs/kopi-update.yml" in readme

@@ -22,7 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 
-__version__ = "1.2.1"
+__version__ = "1.2.7"
 
 
 class GhError(RuntimeError):
@@ -202,7 +202,7 @@ query($id: ID!, $cursor: String) { node(id: $id) { ... on ProjectV2 { items(firs
       ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } }
       ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } } } }
     content { __typename
-      ... on DraftIssue { title body }
+      ... on DraftIssue { id title body }
       ... on Issue { title body url number repository { nameWithOwner } labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } } milestone { title dueOn } }
       ... on PullRequest { title body url number repository { nameWithOwner } labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } } milestone { title dueOn } } } } } } } }
 """ % (LEAN_PAGE, LEAN_FIELD_VALUES)
@@ -216,6 +216,8 @@ def lean_item(node):
     item = {"id": node["id"], "title": content.get("title", ""), "content": {}}
     if content:
         item["content"] = {"type": content["__typename"], "title": content.get("title", ""), "body": content.get("body", "")}
+        if content.get("id"):     # a draft's own id, which is what editing its body needs (gh shows it for drafts too)
+            item["content"]["id"] = content["id"]
         if content.get("url"):
             item["content"].update(url=content["url"], number=content["number"], repository=content["repository"]["nameWithOwner"])
             item["repository"] = f"https://github.com/{content['repository']['nameWithOwner']}"
@@ -1381,6 +1383,31 @@ def cmd_backfill_dates(args):
     emit(args, {"project": number, "dry_run": bool(args.dry_run), "set": done})
 
 
+BIG_IMPORT = 300         # items above which an import of a long, unwindowed changelog gets an advisory
+SECONDS_PER_ITEM = 0.4   # measured: 210 items took 1:19, a 1,631-item import about 10 minutes
+
+
+def estimate_seconds(total):
+    """Roughly how long writing `total` items takes (items, statuses and dates), from the measured speed."""
+    return round(total * SECONDS_PER_ITEM)
+
+
+def _duration(seconds):
+    return f"{seconds} seconds" if seconds < 90 else f"{round(seconds / 60)} minutes"
+
+
+def warn_big_import(total, changelog):
+    """Advise on stderr when a long CHANGELOG.md with no [changelog] setting makes a big import: it is the usual way
+    a board ends up with over a thousand items nobody reads, and it takes minutes to write."""
+    entries = parse_changelog(changelog)
+    if total < BIG_IMPORT or len(entries) < BIG_IMPORT or any(CHANGELOG_WINDOW.get(k) for k in ("last", "since", "group")):
+        return
+    releases = len({v for v, _ in entries})
+    print(f"warning: CHANGELOG.md has {len(entries)} entries in {releases} releases, so this import creates {total} items "
+          f"and takes about {_duration(estimate_seconds(total))}; to track less, set in .kopi.toml `[changelog] last = 50` "
+          "(the newest 50 releases) or `group = \"minor\"` (one item per MAJOR.MINOR), and run it again", file=sys.stderr)
+
+
 def cmd_import(args):
     """Seed an empty project from CHANGELOG.md and TODO.md (draft items) plus the repo's issues and PRs."""
     changelog, todo, linked = load_sources(args, notice=True)
@@ -1393,10 +1420,12 @@ def cmd_import(args):
     warn_duplicate_headings(changelog)
     plan += extras
     total = len(plan) + len(linked)
+    warn_big_import(total, changelog)
     if args.dry_run:
         items = [_item(st, t) for st, t, _ in plan] + [_item(st, _title(t), u) for st, t, u in linked]
         if args.json:
-            emit(args, {"dry_run": True, "items": items, "skipped": [_title(t) for t in skipped]})
+            emit(args, {"dry_run": True, "items": items, "skipped": [_title(t) for t in skipped],
+                        "estimated_seconds": estimate_seconds(total)})
             return
         for status, title, _ in plan:
             print(f"{status}\t{title}")
@@ -1404,7 +1433,8 @@ def cmd_import(args):
             print(f"{status}\t{_title(title)}\t{url}")
         for text in skipped:
             print(f"skipped (duplicate)\t{_title(text)}")
-        print(f"Dry run: {total} items would be imported")
+        print(f"Dry run: {total} items would be imported"
+              + (f" (about {_duration(estimate_seconds(total))} to write)" if total >= BIG_IMPORT else ""))
         return
     number, _ = ensure_project(args)
     if run_json("project", "item-list", str(number), *_owner(args), "--limit", "1")["items"] and not args.force:
@@ -1511,10 +1541,15 @@ def sync_plan(args, items=None):
         elif RANK[status] < board:
             ahead.append((item, item.get("status"), status, item["title"]))
 
+    refresh = []   # [(draft item, body)]: exact-title drafts whose body the files give and the board has otherwise
     for idx, (status, title, body, is_changelog, can_add) in enumerate(entries):
         item = matched.get(idx)
         if item:
             compare(item, status)
+            content = item.get("content") or {}
+            if body and item["title"] == title and content.get("type") == "DraftIssue" and content.get("id") \
+                    and content.get("body", "").replace("\r\n", "\n").strip() != body.replace("\r\n", "\n").strip():
+                refresh.append((item, body))
             if not is_changelog and status != "Done" and RANK.get(item.get("status"), -1) >= RANK["Done"]:
                 ticks.append((item, body or title, status))  # Done on the board, still open in TODO.md
         elif can_add and (is_changelog or not any(similar(body or title, t) for _, t, _ in linked)):
@@ -1538,7 +1573,17 @@ def sync_plan(args, items=None):
     orphans = [i for i in existing if i["id"] not in matched_ids and i["id"] not in linked_ids
                and not i["title"].startswith(off) and not outside_window(i)]
     return SimpleNamespace(number=number, adds=adds, link_adds=link_adds, moves=moves, ahead=ahead, orphans=orphans, items=existing, ticks=ticks,
-                           changelog=changelog)
+                           changelog=changelog, refresh=refresh)
+
+
+def refresh_bodies(args, refresh):
+    """Rewrite the body of each draft in `refresh` ([(item, body)]) to the file's: written WRITE_BATCH at a time, and
+    safe to repeat, so the requests run in parallel like the other field writes."""
+    if refresh:
+        progress(args, f"Refreshing {len(refresh)} item bodies...")
+        mutate_batched(args, [
+            f"updateProjectV2DraftIssue(input: {{draftIssueId: {_gql_str(item['content']['id'])}, body: {_gql_str(body)}}}) "
+            "{ draftIssue { id } }" for item, body in refresh], "refreshed", repeatable=True)
 
 
 def cmd_update(args):
@@ -1555,9 +1600,11 @@ def cmd_update(args):
     warn_context_dependent(p.changelog if getattr(args, "only", None) != "TODO.md" else "",
                            _read("TODO.md") if getattr(args, "only", None) != "CHANGELOG.md" else "")
     adds, link_adds, moves, number = p.adds, p.link_adds, p.moves, p.number
+    refresh = p.refresh if args.refresh_bodies else []
     report = {"project": number, "dry_run": bool(args.dry_run),
               "added": [_item(st, t) for st, t, _ in adds] + [_item(st, _title(t), u) for st, t, u in link_adds],
-              "moved": [{"title": t, "from": old, "to": new} for _, old, new, t in moves]}
+              "moved": [{"title": t, "from": old, "to": new} for _, old, new, t in moves],
+              **({"refreshed": [{"title": item["title"]} for item, _ in refresh]} if args.refresh_bodies else {})}
     if args.dry_run:
         if args.json:
             emit(args, report)
@@ -1568,13 +1615,17 @@ def cmd_update(args):
             print(f"add\t{status}\t{_title(title)}\t{url}")
         for _, old, new, title in moves:
             print(f"move\t{old} -> {new}\t{title}")
-        print(f"Dry run: {len(adds) + len(link_adds)} to add, {len(moves)} to move in project #{number}")
+        for item, _ in refresh:
+            print(f"refresh\tbody\t{item['title']}")
+        print(f"Dry run: {len(adds) + len(link_adds)} to add, {len(moves)} to move"
+              + (f", {len(refresh)} bodies to refresh" if args.refresh_bodies else "") + f" in project #{number}")
         return
     if not adds and not link_adds and not moves:
+        refresh_bodies(args, refresh)
         dates, fields = sync_dates(args, number, p.items, p.changelog)
         sections = sync_sections(args, number, p.items, _read("TODO.md"))
         say(args, f"Project #{number} is up to date" + (f" ({len(dates)} dates set)" if dates else "")
-            + (f" ({len(sections)} sections set)" if sections else ""))
+            + (f" ({len(sections)} sections set)" if sections else "") + (f" ({len(refresh)} bodies refreshed)" if refresh else ""))
         emit(args, {**report, **({"dates": dates} if dates else {}), **({"date_fields_created": fields} if fields else {}),
                     **({"sections": sections} if sections else {})})
         return
@@ -1588,10 +1639,12 @@ def cmd_update(args):
     made += [{"id": i, "title": t, "status": st, "content": {"url": u}} for i, (st, t, u) in zip(created[len(adds):], link_adds)]
     moved = {item["id"]: new for item, _, new, _ in moves}
     board = [{**i, "status": moved.get(i["id"], i.get("status"))} for i in p.items] + made   # every item, as it now stands
+    refresh_bodies(args, refresh)
     dates, fields = sync_dates(args, number, board, p.changelog)
     sections = sync_sections(args, number, board, _read("TODO.md"))
     wait_for_items(args, number, created, before)
     say(args, f"Updated project #{number}: {len(adds) + len(link_adds)} added, {len(moves)} moved"
+        + (f", {len(refresh)} bodies refreshed" if refresh else "")
         + (f", {len(dates)} dates set" if dates else "") + (f", {len(sections)} sections set" if sections else ""))
     emit(args, {**report, **({"dates": dates} if dates else {}), **({"date_fields_created": fields} if fields else {}),
                 **({"sections": sections} if sections else {})})
@@ -2563,13 +2616,66 @@ def render_report(r, markdown=False):
     return "\n".join(out)
 
 
+REPORT_MARKER = "<!-- kopi-report -->"
+
+
+def post_report(args, issue, body):
+    """Post `body` as a comment on issue `issue` of this repo, or edit in place the comment kopi posted there before
+    (found by REPORT_MARKER), so a weekly run keeps one up-to-date status instead of piling up comments. Nothing is
+    written under --dry-run. Returns {issue, url, action} with action "posted", "updated" or "unchanged"."""
+    repo = git_repo()
+    if not repo:
+        raise GhError("--post needs a GitHub repo: no origin remote found in this directory")
+    slug = "/".join(repo)
+    found = run("api", f"repos/{slug}/issues/{issue}/comments", "--paginate", "--jq",
+                f'.[] | select(.body | startswith("{REPORT_MARKER}")) | .id').split()
+    url = f"https://github.com/{slug}/issues/{issue}"
+    if found:
+        path = f"repos/{slug}/issues/comments/{found[-1]}"
+        if run("api", path, "--jq", ".body").rstrip("\n") == body.rstrip("\n"):
+            return {"issue": issue, "url": url, "action": "unchanged"}
+        if args.dry_run:
+            return {"issue": issue, "url": url, "action": "updated"}
+        url = run("api", "-X", "PATCH", path, "-f", f"body={body}", "--jq", ".html_url").strip() or url
+        return {"issue": issue, "url": url, "action": "updated"}
+    if args.dry_run:
+        return {"issue": issue, "url": url, "action": "posted"}
+    return {"issue": issue, "url": run("issue", "comment", str(issue), "--repo", slug, "--body", body).strip() or url, "action": "posted"}
+
+
 def cmd_report(args):
-    """--report [text|markdown]: a progress summary of the project. Read-only; --json prints the data."""
+    """--report [text|markdown] [--to FILE] [--post ISSUE]: a progress summary of the project. Read-only unless asked
+    to write a file or post a comment; --json prints the data."""
     report = build_report(args)
+    to_file = args.to not in (None, "-")
+    out = {}
+    if to_file:
+        markdown = args.report == "markdown" or args.to.lower().endswith(".md")   # a .md file is Markdown
+        if not args.dry_run:
+            with open(args.to, "w") as f:
+                f.write(render_report(report, markdown=markdown) + "\n")
+        out["file"] = args.to
+    if args.post:
+        body = f"{REPORT_MARKER}\n{render_report(report, markdown=True)}\n\n_Kept up to date by kopi._"
+        out["posted"] = post_report(args, args.post, body)
     if args.json:
-        emit(args, report)
+        emit(args, {**report, **out})
         return
-    print(render_report(report, markdown=args.report == "markdown"))
+    if not out:
+        print(render_report(report, markdown=args.report == "markdown"))
+        return
+    prefix = "Dry run: " if args.dry_run else ""
+    if to_file:
+        print(f"{prefix}report {'would be written' if args.dry_run else 'written'} to {args.to}")
+    if args.post:
+        p = out["posted"]
+        verb = {"posted": "post", "updated": "update", "unchanged": "leave"}[p["action"]]
+        done = {"posted": "Posted the report as a new comment", "updated": "Updated the report comment",
+                "unchanged": "The report comment is already up to date"}[p["action"]]
+        print(f"Dry run: would {verb} the report comment on #{p['issue']}" if args.dry_run and p["action"] != "unchanged"
+              else f"{done} on #{p['issue']}: {p['url']}")
+        if args.dry_run:
+            print(body)
 
 
 def _rollup_row(sub, project, owner, where):
@@ -3593,7 +3699,10 @@ def build_parser():
                         f"per changelog release, the default) or items; written to {GANTT_FILE} unless --to says otherwise")
     p.add_argument("--to", metavar="FILE",
                    help="with --gantt: where to write the chart; .svg for an image, .mmd for raw Mermaid, else Markdown "
-                        "with a Mermaid block; - prints it")
+                        "with a Mermaid block; - prints it. With --report: write the report to FILE (Markdown for a .md file)")
+    p.add_argument("--post", type=int, metavar="ISSUE",
+                   help="with --report: post the report (as Markdown) as a comment on issue ISSUE of this repo, or edit "
+                        "in place the comment kopi posted there before")
     p.add_argument("--release", nargs="?", const=True, metavar="TAG",
                    help="create a GitHub release at the last commit: the tag is the newest changelog version number "
                         "(or TAG, the same as --tag) and the notes are its CHANGELOG.md section; with --delete, names "
@@ -3615,6 +3724,9 @@ def build_parser():
     p.add_argument("--close", metavar="ISSUE",
                    help="close one issue in the current repo: ISSUE is a number, an issue URL, or text matching "
                         "exactly one open issue's title")
+    p.add_argument("--refresh-bodies", action="store_true",
+                   help="with --update / --sync: also rewrite a draft item's body when the files give one (a long entry's full "
+                        "text, a grouped minor's bullet list) and the board's differs; overwrites body edits made on the board")
     p.add_argument("--apply-labels", action="store_true",
                    help="with --export issues|prs, --squash or --sync: first add to GitHub the labels ISSUES.md / PRS.md lists for "
                         "an issue / PR that lacks them (never removes labels), so a label added in the file is kept")
@@ -3706,12 +3818,16 @@ def main(argv=None):
         parser.error("--draft only applies to --release")
     if args.cleanup_tag and not args.delete:
         parser.error("--cleanup-tag only applies to --delete release")
-    if args.to and not args.gantt:
-        parser.error("--to only applies to --gantt")
+    if args.to and not (args.gantt or args.report):
+        parser.error("--to only applies to --gantt and --report")
+    if args.post and not args.report:
+        parser.error("--post only applies to --report")
     if args.yes and not args.promote_all:
         parser.error("--yes only applies to --promote-all")
     if args.check and not args.diff:
         parser.error("--check only applies to --diff")
+    if args.refresh_bodies and not (args.update or args.sync):
+        parser.error("--refresh-bodies only applies to --update and --sync")
     if args.apply_labels and not (args.export in LINKED_EXPORTS or args.squash or args.sync):
         parser.error("--apply-labels only applies to --export issues|prs, --squash and --sync")
     if args.all and not args.restore:

@@ -210,3 +210,63 @@ def test_report_lists_milestone_progress(capsys):
     assert json.loads(capsys.readouterr().out)["milestones"] == [{"title": "v2.0", "due": "2026-12-01", "done": 1, "total": 2}]
     _run_update(REPORT_BOARD, argv=("--report",))
     assert "Milestones" not in capsys.readouterr().out
+
+
+def _post(issue=5, dry_run=False, runs=()):
+    """post_report with `gh` answering from `runs` (a list of return values, in call order)."""
+    with mock.patch("kopi.git_repo", return_value=("o", "kopi")), mock.patch("kopi.run", side_effect=list(runs)) as run:
+        result = cli.post_report(mock.Mock(dry_run=dry_run), issue, "<!-- kopi-report -->\nbody")
+    return result, run
+
+
+def test_post_report_creates_a_comment_when_there_is_none():
+    result, run = _post(runs=["", "https://github.com/o/kopi/issues/5#issuecomment-1\n"])
+    assert result == {"issue": 5, "url": "https://github.com/o/kopi/issues/5#issuecomment-1", "action": "posted"}
+    assert run.call_args_list[0].args[:2] == ("api", "repos/o/kopi/issues/5/comments")
+    assert run.call_args_list[1].args == ("issue", "comment", "5", "--repo", "o/kopi", "--body", "<!-- kopi-report -->\nbody")
+
+
+def test_post_report_edits_its_own_comment_in_place_and_skips_an_identical_one():
+    result, run = _post(runs=["11\n12\n", "<!-- kopi-report -->\nolder", "https://github.com/o/kopi/issues/5#issuecomment-12\n"])
+    assert result["action"] == "updated" and result["url"].endswith("#issuecomment-12")           # the newest of its comments
+    assert run.call_args_list[2].args == ("api", "-X", "PATCH", "repos/o/kopi/issues/comments/12", "-f", "body=<!-- kopi-report -->\nbody", "--jq", ".html_url")
+    same, run = _post(runs=["12\n", "<!-- kopi-report -->\nbody\n"])
+    assert same["action"] == "unchanged" and run.call_count == 2                                   # nothing written
+
+
+def test_post_report_dry_run_reads_but_never_writes():
+    posted, run = _post(dry_run=True, runs=[""])
+    assert posted["action"] == "posted" and run.call_count == 1
+    updated, run = _post(dry_run=True, runs=["12\n", "old"])
+    assert updated["action"] == "updated" and run.call_count == 2
+
+
+def test_post_report_needs_a_repo():
+    with mock.patch("kopi.git_repo", return_value=None), pytest.raises(cli.GhError, match="--post needs a GitHub repo"):
+        cli.post_report(mock.Mock(dry_run=False), 5, "x")
+
+
+def test_report_to_file_and_post_in_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    with mock.patch("kopi.post_report", return_value={"issue": 5, "url": "u", "action": "posted"}) as post:
+        _run_update(REPORT_BOARD, argv=("--json", "--report", "--to", "out.txt", "--post", "5"))
+    data = json.loads(capsys.readouterr().out)
+    assert data["file"] == "out.txt" and data["posted"]["action"] == "posted" and data["project"]["number"] == 2
+    assert (tmp_path / "out.txt").read_text().startswith("Project #2: kopi")                       # plain text: not a .md file
+    assert post.call_args.args[2].startswith("<!-- kopi-report -->\n# kopi (project #2)")          # a comment is always Markdown
+    _run_update(REPORT_BOARD, argv=("--report", "markdown", "--to", "out.md"))
+    assert (tmp_path / "out.md").read_text().startswith("# kopi (project #2)")
+    _run_update(REPORT_BOARD, argv=("--report", "--to", "notes.md"))
+    assert (tmp_path / "notes.md").read_text().startswith("# kopi (project #2)")                  # a .md name is enough
+
+
+def test_report_dry_run_writes_no_file(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _run_update(REPORT_BOARD, argv=("--report", "--to", "out.md", "--dry-run"))
+    assert "report would be written to out.md" in capsys.readouterr().out and not (tmp_path / "out.md").exists()
+
+
+def test_to_and_post_need_report():
+    for argv in (["--diff", "--to", "x.md"], ["--diff", "--post", "5"]):
+        with pytest.raises(SystemExit):
+            cli.main(argv)

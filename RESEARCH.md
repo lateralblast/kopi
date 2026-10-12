@@ -46,3 +46,22 @@ Notes on ideas we have considered but not built. Each section says what the idea
 - Dates: a group needs Started as its earliest release date and Completed as its latest, which no code does yet.
 
 **Answers (1.1.8).** The title is a stable label, `[16.5] Releases 16.5.x`, and the content goes in the body (a bullet list, newest first), so a count or an arbitrary bullet never has to name the group. Identity: `CHANGELOG_TITLE` accepts a two-part version, `resolve_dates` and `gantt_tasks` handle it, and callers that need the individual bullets (duplicate checks, tag skipping, the context warning) read them ungrouped (`parse_changelog(raw=True)`). Dates: Completed is the group's latest release date and Started the release before its first, so the bars are contiguous. Left open: a group's body is written once, so a minor that keeps growing is not refreshed on the board.
+
+## Creating items in parallel
+
+**Idea.** Run `--import` / `--update`'s item creation (`addProjectV2DraftIssue`, 50 per request) several requests at once, the way the Status, date and section writes already are.
+
+**Why it might help.** Creation is now most of a big import's time (about 0.115 s per item on the server; lunar's 1,631 items take around 3 minutes of it).
+
+**Result: measured, not built (1.2.7).** 300 drafts on a scratch board, two trials each:
+
+| Workers | Time | Failed requests | Items that landed |
+|---|---|---|---|
+| 1 | 37.5 s, 36.7 s | 0, 0 | 300, 300 |
+| 2 | 21.1 s, 28.0 s | 0, 2 | 300, 288 |
+| 3 | 17.5 s, 17.1 s | 2, 2 | 246, 272 |
+
+At best about 40% off the create phase, but parallel requests fail even at 2 workers, and a failed request can still create part of its items. A blind retry would then duplicate items (a repeated field write is harmless, a repeated create is not) and no retry loses them. A correct recovery has to list the board after a failure, match the new drafts to the failed request by title and body, and wait out GitHub's listing lag first, which is a lot of machinery and risk for a saving that matters only on very large imports. Sequential creates never failed. The idempotent passes (statuses, dates, sections, bodies) stay parallel with a retry, since repeating them is safe.
+
+**Open questions if it is ever revisited.** Whether GitHub's partial application is a server-side timeout that a smaller batch (say 10) avoids; whether a per-item token in the body could make a retry detectable without listing the board.
+

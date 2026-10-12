@@ -68,6 +68,7 @@ class FakeGraphql:
     def __init__(self, fields=()):
         self.fields, self.created, self.added, self.statuses, self.dates, self.queries = list(fields), [], [], [], [], []
         self.sections = []
+        self.refreshed = []   # [(draft id, body)] from updateProjectV2DraftIssue
         self.base_total = 0
 
     def __call__(self, query, **variables):
@@ -88,6 +89,9 @@ class FakeGraphql:
         for n, content in re.findall(r'a(\d+): addProjectV2ItemById\(input: \{projectId: "[^"]*", contentId: "([^"]*)"', query):
             self.added.append(content.removeprefix("NODE:"))
             data[f"a{n}"] = {"item": {"id": f"LNEW{len(self.added) - 1}"}}
+        for n, draft, body in re.findall(r'a(\d+): updateProjectV2DraftIssue\(input: \{draftIssueId: "([^"]*)", body: ' + string, query):
+            self.refreshed.append((draft, json.loads(body)))
+            data[f"a{n}"] = {"draftIssue": {"id": draft}}
         for n, item, field, option in re.findall(r'a(\d+): updateProjectV2ItemFieldValue\(input: \{projectId: "[^"]*", itemId: "([^"]*)", '
                                                r'fieldId: "([^"]*)", value: \{singleSelectOptionId: "([^"]*)"', query):
             self.statuses.append((item, option))

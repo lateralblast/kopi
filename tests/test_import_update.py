@@ -417,3 +417,91 @@ def test_creating_items_is_never_parallel_or_retried():
     with mock.patch("kopi.graphql", side_effect=cli.GhError("down")) as gql, pytest.raises(cli.GhError):
         cli.mutate_batched(mock.Mock(json=True), _parts(120), "created")
     assert gql.call_count == 1
+
+
+BIG_CHANGELOG = "# Changelog\n\n" + "".join(f"## [{n // 100}.{n // 10 % 10}.{n % 10}] - 2026-01-01\n- Change number {n}\n\n" for n in range(349, -1, -1))
+
+
+def _import_big(argv=("--import", "--dry-run"), config=None):
+    with mock.patch("kopi.check_auth"), mock.patch("kopi.git_owner", return_value="x"), \
+         mock.patch("kopi.load_config", return_value=config or {}), mock.patch("kopi.fetch_linked", return_value=[]), \
+         mock.patch("kopi._read", side_effect=lambda p: BIG_CHANGELOG if p == "CHANGELOG.md" else ""):
+        return cli.main(list(argv))
+
+
+def test_big_unwindowed_import_advises_narrowing_the_changelog(capsys):
+    assert _import_big() == 0
+    cap = capsys.readouterr()
+    assert "warning: CHANGELOG.md has 350 entries in 350 releases, so this import creates 350 items" in cap.err
+    assert "`[changelog] last = 50`" in cap.err and "`group = \"minor\"`" in cap.err
+    assert "Dry run: 350 items would be imported (about 2 minutes to write)" in cap.out
+
+
+def test_a_changelog_setting_or_a_small_import_gets_no_advisory(capsys):
+    _import_big(config={"changelog": {"last": 50}})
+    assert "this import creates" not in capsys.readouterr().err
+    _import_big(config={"changelog": {"group": "minor"}})
+    assert "this import creates" not in capsys.readouterr().err
+    _run_import([], argv=("--import", "--dry-run"))
+    cap = capsys.readouterr()
+    assert "this import creates" not in cap.err and "Dry run: 5 items would be imported\n" in cap.out   # no estimate when small
+
+
+def test_dry_run_json_estimates_the_write_time(capsys):
+    _import_big(argv=("--json", "--import", "--dry-run"))
+    assert json.loads(capsys.readouterr().out)["estimated_seconds"] == 140
+
+
+GROUPED = "# Changelog\n\n## [0.0.2] - 2026-10-10\n- Auth check before every command.\n\n## [0.0.1] - 2026-10-10\n- Single-file CLI.\n"
+GROUP_BODY = "- 0.0.2: Auth check before every command.\n- 0.0.1: Single-file CLI."
+NO_TODO = "# TODO\n"
+
+
+def _draft(item_id, title, body, draft_id="DI_1", status="Done"):
+    content = {"type": "DraftIssue", "body": body, **({"id": draft_id} if draft_id else {})}
+    return {"id": item_id, "title": title, "status": status, "content": content}
+
+
+def _grouped_update(items, argv, **kw):
+    with mock.patch("kopi.load_config", return_value={"changelog": {"group": "minor"}}):
+        return _run_update(items, argv=argv, changelog=GROUPED, todo=NO_TODO, **kw)
+
+
+def test_refresh_bodies_rewrites_a_stale_grouped_body(capsys):
+    stale = _draft("G", "[0.0] Releases 0.0.x", "- 0.0.1: Single-file CLI.", "DI_G")   # written when only 0.0.1 existed
+    rc, rj, _ = _grouped_update([stale], ("--update", "--refresh-bodies"))
+    assert rc == 0 and rj.gql.refreshed == [("DI_G", GROUP_BODY)]
+    assert "1 bodies refreshed" in capsys.readouterr().out
+
+
+def test_bodies_are_left_alone_without_the_flag_or_when_nothing_differs(capsys):
+    stale = _draft("G", "[0.0] Releases 0.0.x", "old", "DI_G")
+    assert _grouped_update([stale], ("--update",))[1].gql.refreshed == []
+    current = _draft("G", "[0.0] Releases 0.0.x", GROUP_BODY.replace("\n", "\r\n"), "DI_G")       # CRLF from the web UI is the same text
+    rj = _grouped_update([current], ("--update", "--refresh-bodies"))[1]
+    assert rj.gql.refreshed == [] and "up to date" in capsys.readouterr().out
+
+
+def test_refresh_bodies_never_touches_notes_on_items_whose_file_side_has_no_body(capsys):
+    short = _draft("A", "[0.0.1] Single-file CLI.", "my own notes added on the board", "DI_A")
+    no_id = _draft("B", "[0.0] Releases 0.0.x", "stale", None)                                      # no draft id: cannot be edited
+    linked = {"id": "L", "title": "An issue", "status": "Todo", "content": {"type": "Issue", "number": 3, "repository": "o/kopi", "body": "x"}}
+    for board in ([short], [no_id], [linked]):
+        assert _run_update(board, argv=("--update", "--refresh-bodies"), changelog=GROUPED, todo=NO_TODO)[1].gql.refreshed == []
+
+
+def test_refresh_bodies_dry_run_and_json(capsys):
+    stale = _draft("G", "[0.0] Releases 0.0.x", "old", "DI_G")
+    rc, rj, _ = _grouped_update([stale], ("--update", "--refresh-bodies", "--dry-run"))
+    out = capsys.readouterr().out
+    assert "refresh\tbody\t[0.0] Releases 0.0.x" in out and "0 to add, 0 to move, 1 bodies to refresh in project #2" in out
+    assert rj.gql.refreshed == []                                                                    # nothing written
+    _grouped_update([stale], ("--json", "--update", "--refresh-bodies"))
+    assert json.loads(capsys.readouterr().out)["refreshed"] == [{"title": "[0.0] Releases 0.0.x"}]
+    _grouped_update([stale], ("--json", "--update"))
+    assert "refreshed" not in json.loads(capsys.readouterr().out)                                    # the JSON shape only grows with the flag
+
+
+def test_refresh_bodies_needs_update_or_sync():
+    with pytest.raises(SystemExit):
+        cli.main(["--diff", "--refresh-bodies"])

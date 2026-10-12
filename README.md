@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 1.2.1
+Version: 1.2.7
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -47,7 +47,7 @@ cd ~/code/my-repo
 # Files to board
 ./kopi.py --init [PATH]                                      # ensure the current repo has a project
 ./kopi.py --import [PATH|FILE] [--dry-run] [--force]         # seed the project from CHANGELOG.md, TODO.md, issues and PRs
-./kopi.py --update [PATH|FILE] [--dry-run]                   # sync CHANGELOG.md / TODO.md / issue / PR changes into the project
+./kopi.py --update [PATH|FILE] [--dry-run] [--refresh-bodies]  # sync CHANGELOG.md / TODO.md / issue / PR changes into the project (--refresh-bodies: also rewrite stale draft bodies)
 ./kopi.py --diff [PATH] [--check]                            # show how the project differs from the files (--check: exit 2 if it does)
 ./kopi.py --sync [PATH] [--dry-run]                          # --update then --squash: files/GitHub -> board, Done on board -> ticks in TODO.md
 ./kopi.py --import|--update --code-comments --releases       # also track TODO:/FIXME: comments and git tags (opt-in)
@@ -84,7 +84,7 @@ cd ~/code/my-repo
 ./kopi.py --release [TAG] [--tag TAG] [--draft] [--dry-run]  # create a GitHub release at the last commit (notes from CHANGELOG.md)
 ./kopi.py --checkquota                                       # how much of the hourly GraphQL quota is left, and when it resets
 ./kopi.py --delete release --tag TAG [--cleanup-tag] [--dry-run]   # delete a GitHub release (also: --delete release --release TAG)
-./kopi.py --report [text|markdown]                           # progress summary of the project
+./kopi.py --report [text|markdown] [--to FILE] [--post ISSUE] [--dry-run]  # progress summary of the project (to a file, or as an issue comment)
 ./kopi.py --rollup [DIR ...]                                 # status counts across several repos' projects (or all open projects)
 
 # Options for any of the above
@@ -178,7 +178,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 
 - `list`: array of `{number, title, state, repos, url}`; `fields` and `items`: the `gh` arrays; `view`: the project object (always JSON).
 - `create`: `{number, url, linked_repo}`; `--init`: `{number, created}`; `delete`: `{deleted}`; `add`: `{added}`; `set`: `{project, dry_run, item, field, value}`.
-- `--import` and `--update`: `{project, dry_run, added: [{status, title, url?}], moved: [{title, from, to}]}` (`--import` reports `items`, `skipped` on a dry run and `imported` otherwise).
+- `--import` and `--update`: `{project, dry_run, added: [{status, title, url?}], moved: [{title, from, to}]}` (`--update --refresh-bodies` adds `refreshed: [{title}]`) (`--import` reports `items`, `skipped`, `estimated_seconds` on a dry run and `imported` otherwise).
 - `--diff`: `{project, files_only, github_only, board_only, duplicates, behind, ahead, in_sync}`.
 - `--sync`: `{project, dry_run, update, squash}` (the `--update` and `--squash` results).
 - `--export todo|inprogress|done`: `{project, dry_run, file, added, already_present}`; `--export issues` / `prs`: `{project, dry_run, file, changed, issues|prs: [{status, number, repository, title, url, labels, assignees}]}` plus `labels_added: [{number, repository, add}]` under `--apply-labels` (`--squash` carries it in its `issues` object); `--import issues`: `{repo, dry_run, created: [{title, url?, closed, labels}], existing, unknown_labels}`.
@@ -194,7 +194,7 @@ Add `--json` to any command or mode to print its result as one JSON document on 
 
 ### Speed and progress
 
-`--import` and `--update` write in batches: items are created, linked issues and PRs are added, and Status and date values are written 50 at a time in single GraphQL requests (Status, date and section writes three requests at once; item creation one at a time, because repeating a failed create would duplicate items), so even a long history imports in under a minute (a 51-item repo took 52 seconds). While they work they print progress on stderr, for example:
+`--import` and `--update` write in batches: items are created, linked issues and PRs are added, and Status and date values are written 50 at a time in single GraphQL requests (Status, date and section writes three requests at once; item creation one at a time, because a failed create request can still create some of its items, so repeating it would duplicate them; measured with 2 to 3 parallel requests), so even a long history imports in under a minute (a 51-item repo took 52 seconds). While they work they print progress on stderr, for example:
 
 ```
 Importing 51 items into project #7
@@ -241,6 +241,7 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 `kopi --import` seeds the repo's project (creating and linking it first if missing, as `--init` does) with draft items built from `CHANGELOG.md` and `TODO.md` in the current directory, plus the repo's issues and pull requests. It does nothing if the project already has items, unless you pass `--force`. Use `--dry-run` to print what would be imported without touching GitHub.
 
 - Each `CHANGELOG.md` bullet becomes a **Done** item titled `[version] text` (oldest first).
+- **A very long changelog.** When an import would create 300 or more items from a changelog with that many entries and `.kopi.toml` sets no `[changelog] last`, `since` or `group`, kopi warns on stderr (the entries, releases and items, and about how long the writes take) and points at those settings. `--import --dry-run` also ends with `(about 2 minutes to write)` for imports of 300 or more, and `--json` gives `estimated_seconds` (about 0.4 s per item, measured). Nothing changes: the import still runs as asked.
 - Release headings may be `## [1.2.3] - 2026-01-31` (Keep a Changelog), `## 1.2.3 - 2026-01-31` or `## v1.2.3 (2026-01-31)`; the date is optional. Every feature that reads the changelog (`--update`, dates, `--gantt`, `--release`, `--list releases --local`) accepts all three.
 - A bullet wrapped onto indented lines is one entry: its lines are joined with spaces. Nested bullets are ignored. `--squash` ticks the first line of a wrapped entry and `--annotate` puts the issue reference on its last line.
 - Each `TODO.md` checkbox becomes an item: `[ ]` is **Todo**, `[~]` is **In Progress**, `[x]` is **Done**.
@@ -263,6 +264,7 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 - Completed entries (`[x]` in `TODO.md`, or any `CHANGELOG.md` entry) that match no board item exactly are also compared, at 60%+ shared words, with board items that are not yet Done (Todo or In Progress). A match moves that item to **Done** instead of adding a duplicate, so reworded items still get closed. Each board item is matched at most once, best pairs first.
 - GitHub's item listing can lag for a short time after writes. After adding items, `--update` and `--import` finish their other writes (such as the dates) and then poll the board's item count (up to 30 seconds; one API point a poll) until the new items are counted, so an immediate re-run won't add them twice. The dates are written first because they need only the new items' ids; the wait is then a few seconds. An import's time is mostly the writes themselves, about 0.13 seconds each (143 items took 91 seconds). If GitHub is still slow they print a warning; wait a little before running `--update` again.
 - Keeping an item's text unchanged when you tick it is still the most reliable way to match.
+- **Item bodies** are written when an item is created and `--update` leaves them alone, so a grouped minor (`[changelog] group = "minor"`) that keeps growing, or a long entry whose full text moved, keeps its first body. `kopi --update --refresh-bodies` (also with `--sync`) rewrites those: an exact-title draft item whose body the files give and the board's differs gets the file's body. It never touches a draft whose file side has no body (a short entry, where the board's body may hold your own notes), issues and PRs, or items it cannot edit, and it overwrites a body you edited on the board, which is why it is opt-in. `--dry-run` lists them (`refresh	body	[0.4] Releases 0.4.x`) and `--json` adds `refreshed: [{title}]` (only with the flag).
 - The repo's issues and PRs are matched to board items by URL. New ones are added as linked items (open issue **Todo**, closed issue **Done**, open PR **In Progress**, merged PR **Done**), and existing ones move forward when their state on GitHub does (for example an issue closed since the last run). A reopened issue is not moved back. Linked items never take part in title matching, so a changelog entry can't close one, and a new `TODO.md` item that duplicates an issue or PR title is left to the issue or PR.
 
 ### Comparing the project with the files (`--diff`)
@@ -298,6 +300,14 @@ Add `--check` to use it as a gate in CI or a pre-commit hook: the exit status is
   ```
 
 - **Fixing a failure.** The report lists what differs (`files-only`, `github-only`, `board-only`, `behind`, `ahead`, `duplicate`); `kopi --sync` brings the board and files together, or `--diff --json` gives `in_sync` and the lists to a script.
+
+### Keeping the board up to date on push (`kopi --update` in CI)
+
+The check above only reports. [`docs/kopi-update.yml`](docs/kopi-update.yml) is a second example workflow that runs `kopi --update` when `CHANGELOG.md` or `TODO.md` change on your default branch (and on demand), so the board follows without anyone running a command. It needs the same kind of token as the check, with write access to Projects (a classic personal access token with `project` and `repo`, or a fine-grained one with Projects read and write), and a project that already exists: run `kopi --import` once by hand first.
+
+- **Board only.** `--update` adds and moves board items and fills dates; it never edits or commits files, so `--sync` (which ticks `TODO.md`) is not what a runner should use.
+- **One run at a time.** The workflow has a `concurrency` group and never cancels a run in progress: two runs writing at once could each add the same new item. Repeating `--update` is otherwise safe, because a second run finds nothing left to add.
+- Add `--refresh-bodies` to the command if grouped or long entries should have their bodies rewritten too (see [Updating the project](#updating-the-project-from-changelogmd-todomd-issues-and-prs)).
 
 ### Syncing both ways (`--sync`)
 
@@ -646,6 +656,7 @@ Board vs files:
 - **Trends** (shown when there is anything to measure) come from the board's Started / Completed dates and the changelog's release dates: for each of the last 12 months, the changelog versions released and the work items (not changelog entries) completed; the **cycle time** of work items with both dates (median, mean, longest, in days); and the gap between consecutive release days. With `--json` they are `trends: {months: [{month, releases, completed}], cycle_days, release_interval_days}`, the last two `{n, median, mean, longest}` or null. A board without date fields shows only the release counts.
 - **Recent releases** are the newest five sections of `CHANGELOG.md` with their dates and number of entries.
 - **Board vs files** is the number of differences `--diff` would report, or "not compared" when there is no `CHANGELOG.md` or `TODO.md`.
+- **`--to FILE`** writes the report to a file instead of printing it (Markdown when the name ends in `.md` or you asked for `markdown`; `--dry-run` writes nothing). **`--post ISSUE`** posts it as a comment on issue `ISSUE` of this repo (always Markdown), for a status that lives on GitHub: a hidden `<!-- kopi-report -->` marker lets the next run find that comment and **edit it in place** instead of adding another, and a run whose report is unchanged writes nothing (`The report comment is already up to date on #12`). `--dry-run` reads the issue's comments, says whether it would post, update or leave it, and prints the comment. Both may be given at once, and a weekly workflow can run `kopi --report --post 12` with the token from the CI recipes. With `--json` the data gains `file` and `posted: {issue, url, action}` (`action` is `posted`, `updated` or `unchanged`).
 - `kopi --report markdown` writes the same thing as Markdown headings and bullets. With `--json` you get the data instead, whatever the format.
 
 ### Roll-up across projects (`--rollup`)

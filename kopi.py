@@ -22,7 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 
-__version__ = "1.2.8"
+__version__ = "1.3.0"
 
 
 class GhError(RuntimeError):
@@ -703,6 +703,60 @@ def context_dependent(text):
     """True if an entry reads as a continuation of the one before it ("Neither is run by ...", "Both were run ...",
     "as above"), so as a board item on its own it would mean nothing. A heuristic, used only to warn."""
     return bool(CONTEXT_START.match(text) or CONTEXT_WORDS.search(text))
+
+
+# What looks like a credential. Every pattern needs something a real secret has (a known prefix and length, a
+# key header, a password inside a URL, or a value that mixes letters and digits), so prose such as "reads GH_TOKEN
+# from the environment" or "asks for a password" does not match.
+SECRET_PATTERNS = (
+    ("GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{22,}")),
+    ("AWS access key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("Slack token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}")),
+    ("API key (sk-...)", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")),
+    ("private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("JSON web token", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+")),
+    ("password in a URL", re.compile(r"\bhttps?://[^/\s:@`]+:([^/\s@`]{3,})@")),
+    ("secret assignment", re.compile(r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|token)\b[\"'`]?\s*[:=]\s*[\"']?"
+                                     r"((?=[^\s\"'`]*[A-Za-z])(?=[^\s\"'`]*\d)[^\s\"'`<>{}$*()\[\]]{8,})")),
+)
+PLACEHOLDER = re.compile(r"(?i)^(?:x{3,}|\.{3}|\*+|your|my|example|sample|dummy|fake|test|changeme|placeholder|redacted|\$|<)")
+
+
+def find_secrets(text):
+    """[(kind, masked value)] for each credential-looking string in `text`. The value is cut to its first four
+    characters, so a warning never repeats a secret in full."""
+    found = []
+    for kind, pattern in SECRET_PATTERNS:
+        for m in pattern.finditer(text):
+            value = m.group(1) if m.groups() else m.group(0)
+            if not PLACEHOLDER.match(value):
+                found.append((kind, value[:4] + "…"))
+    return found
+
+
+def secret_lines(lines):
+    """[(line number, kind, masked)] for the credential-looking text in the bullets of `lines` (a file's lines): the
+    text kopi would copy onto the board. Prose outside bullets is not imported, so it is not scanned."""
+    return [(n + 1, kind, masked) for first, last in bullet_blocks(lines) for n in range(first, last + 1)
+            for kind, masked in find_secrets(lines[n])]
+
+
+def warn_secrets(changelog, todo, extras=(), limit=5):
+    """Warn on stderr when an entry that --import / --update would copy onto the board looks like it holds a credential
+    (a token, key, private key or password). The board, and so every collaborator on it, would see the text; this is
+    advisory, like the other warnings, and never changes what is imported. The value is masked."""
+    found = [f"CHANGELOG.md:{n} ({kind} {masked})" for n, kind, masked in secret_lines(changelog.splitlines())]
+    found += [f"TODO.md:{n} ({kind} {masked})" for n, kind, masked in secret_lines(todo.splitlines())]
+    found += [f"{title[:40]}… ({kind} {masked})" for _, title, body in extras for kind, masked in find_secrets(f"{title}\n{body}")]
+    if found:
+        print(f"warning: {_n(len(found), 'entry').replace('entrys', 'entries')} may contain a credential, which would be copied onto "
+              "the board (and every collaborator on it can read it); remove or redact it, rotate it if it was real, then run again:",
+              file=sys.stderr)
+        for f in found[:limit]:
+            print(f"  {f}", file=sys.stderr)
+        if len(found) > limit:
+            print(f"  ... and {len(found) - limit} more", file=sys.stderr)
 
 
 def warn_context_dependent(changelog, todo, limit=5):
@@ -1418,6 +1472,7 @@ def cmd_import(args):
     warn_similar_todos(todo)
     warn_context_dependent(changelog, todo)
     warn_duplicate_headings(changelog)
+    warn_secrets(changelog, todo, extras)
     plan += extras
     total = len(plan) + len(linked)
     warn_big_import(total, changelog)
@@ -1599,6 +1654,8 @@ def cmd_update(args):
         warn_duplicate_headings(p.changelog)
     warn_context_dependent(p.changelog if getattr(args, "only", None) != "TODO.md" else "",
                            _read("TODO.md") if getattr(args, "only", None) != "CHANGELOG.md" else "")
+    warn_secrets(p.changelog if getattr(args, "only", None) != "TODO.md" else "",
+                 _read("TODO.md") if getattr(args, "only", None) != "CHANGELOG.md" else "")
     adds, link_adds, moves, number = p.adds, p.link_adds, p.moves, p.number
     refresh = p.refresh if args.refresh_bodies else []
     report = {"project": number, "dry_run": bool(args.dry_run),

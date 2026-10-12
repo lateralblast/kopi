@@ -7,6 +7,16 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-12
+
+### Added
+- `--import` and `--update` (and `--sync`) warn on stderr when a `CHANGELOG.md` / `TODO.md` bullet, or with `--code-comments` a code comment, looks like it holds a credential, since kopi copies that text onto the board for everyone who can see it. It recognises GitHub tokens, AWS and Google keys, Slack tokens, `sk-...` API keys, private key headers, JSON web tokens, passwords inside URLs and `password = ...` / `token: ...` assignments with a real-looking value, and names the file, line and kind with only the first four characters of the value (`CHANGELOG.md:4 (GitHub token ghp_…)`). Prose, placeholders such as `xxxxxxxx`, `<your key>` or `${GH_TOKEN}`, and text outside bullets are not flagged. Advisory only, like the other warnings. Scanning every changelog, TODO and ISSUES file under `~/code` found no false positives.
+
+## [1.2.9] - 2026-10-12
+
+### Added
+- `.pre-commit-config.yaml` runs gitleaks (pinned to v8.30.1) on every commit, so a staged token, key or password stops the commit (`pip install pre-commit && pre-commit install` once). Tested in a throwaway clone: a clean change passes and a staged fake GitHub token is blocked (rule `github-pat`, value redacted). A full gitleaks scan of the repo (51 commits and the working tree) found no leaks.
+
 ## [1.2.8] - 2026-10-12
 
 ### Fixed

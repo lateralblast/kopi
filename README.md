@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 1.2.8
+Version: 1.3.0
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -18,6 +18,7 @@ Version: 1.2.8
 - [Roadmap dates](#roadmap-dates): [`--setup-dates`, `--backfill-dates`](#roadmap-dates), [`--gantt`](#gantt-chart-of-the-roadmap---gantt)
 - [Releases](#creating-a-release---release)
 - [Reports](#reports): [`--report`](#progress-report---report), [`--rollup`](#roll-up-across-projects---rollup)
+- [Development and security](#development-and-security): [setup and tests](#setup-and-tests), [keeping credentials out](#keeping-credentials-out)
 
 ## Quick start
 
@@ -251,6 +252,7 @@ Run `kopi --init` inside a git repo with a github.com `origin`. It looks for a p
 - `TODO.md` items that duplicate an issue or PR title are skipped, so the linked item wins.
 - Open `TODO.md` entries (of four or more words) that start with the same word and share at least half of their first eight words are reported on stderr as `possible duplicate TODO.md entries`, also by `--update`. It is advice only: nothing is merged or skipped, and `--dedupe` still removes exact-title copies only.
 - Entries that read as a continuation of the one before them (they start with `Neither`, `Both`, `It`, `They`, `These`, `Also`, `Then`, ... or say `as above`) are reported on stderr too, since as a board item on their own they would mean nothing. Advice only; the entries are still imported.
+- **Credentials.** `--import` and `--update` (so `--sync` too) copy `CHANGELOG.md` and `TODO.md` bullets, and with `--code-comments` code comments, onto the board, where everyone who can see it can read them. If an entry looks like it holds a credential (a GitHub token, an AWS or Google key, a Slack token, an `sk-...` API key, a private key header, a JSON web token, a password inside a URL, or `password = ...` / `token: ...` with a real-looking value) kopi warns on stderr with the file, line and kind, naming the first four characters of the value and no more, and says to remove it and rotate it if it was real. Plain prose ("reads `GH_TOKEN` from the environment"), placeholders (`xxxxxxxx`, `<your key>`, `${GH_TOKEN}`, `changeme`) and text outside bullets are not flagged. Advice only: the entries are still imported, so read the warning before a real run (`--dry-run` shows the same warning).
 - A version that has more than one release heading (say one for Added and one for Fixed, as `manx` has for `0.5.1` and `0.5.2`) is reported on stderr: all of its entries are imported, and its release date is the latest of its headings.
 - Markdown bold (`**text**`, `__text__`) is removed from item titles (code spans are left alone); the body keeps the original text. A repo with issues turned off gets one `note:` from `--import` and nothing from the other commands.
 
@@ -677,6 +679,27 @@ TOTAL        2 projects      3     0            11    79%    50
 - **Each repo keeps its own settings.** For a directory, kopi reads that repo's `.kopi.toml`, so its `owner`, `project` title and `[status]` names apply to its row. An explicit `--owner` or `--status-map` on the command line applies to every repo instead.
 - **Counts** are work items by status, as in `--report`: the board's `[version] ...` changelog entries are in the HISTORY column and left out of the percentage. A status kopi does not recognise is counted in `other` (shown in `--json`).
 - A directory that is not a repo with a github.com origin, or whose repo has no project, is skipped with a warning on stderr; `--json` lists them under `skipped`.
+
+## Development and security
+
+### Setup and tests
+
+```
+python3 -m venv .venv && .venv/bin/pip install -e . -r requirements.txt   # once
+.venv/bin/pytest                                                          # all tests
+.venv/bin/pytest tests/test_core.py::test_error_returns_1                 # one test
+```
+
+- **Two kinds of test.** Most tests mock the `gh` layer (`kopi.run`, `kopi.graphql`) and never call GitHub. `tests/test_smoke.py` is the exception: it runs the real `kopi.py` as a subprocess against a stand-in `gh` (`tests/fakegh.py`, a small fake GitHub kept in a JSON file), so argument quoting, GraphQL literals, JSON parsing and exit codes are exercised for real. A change that touches how kopi talks to `gh` should get a case there.
+- **Versions.** Every feature, fix or closed `TODO.md` item bumps the version by one patch step (no component above 9: `1.2.9` is followed by `1.3.0`) with a dated `CHANGELOG.md` entry; the version appears in `kopi.py`, `pyproject.toml`, the `Version:` line above and the newest changelog heading, and a test checks they agree.
+- **Python.** kopi has no runtime dependencies and runs on Python 3.9 and later, so avoid syntax newer than that (for example a backslash inside an f-string expression).
+
+### Keeping credentials out
+
+- **kopi holds no credentials.** Every GitHub call goes through the `gh` CLI, which owns authentication (`gh auth login`, or a token in `GH_TOKEN`, as the [CI recipes](#gating-ci-on-it---diff---check) use). kopi never stores or prints a token.
+- **Before text reaches the board.** `--import` and `--update` warn on stderr when a `CHANGELOG.md` or `TODO.md` bullet (or a code comment) looks like a token, key, private key, password in a URL or a `password = ...` value, naming the file and line and only the first four characters of the value: see [Credentials](#importing-changelogmd-todomd-issues-and-prs). It is advice, not a block, so read it before a real run.
+- **Before a commit.** `.pre-commit-config.yaml` runs [gitleaks](https://github.com/gitleaks/gitleaks) on every commit and stops one that contains a credential. Turn it on once with `pip install pre-commit && pre-commit install`; scan the whole history any time with `gitleaks git`. If a credential does get committed, rotate it: removing it from the files does not remove it from history.
+- **In CI.** The example workflows read the token from a repository secret (`KOPI_TOKEN`) and never write it into a file; GitHub masks it in the logs, including in the `pip install` URL that lets a runner fetch a private kopi repo.
 
 ## Help Support Development
 

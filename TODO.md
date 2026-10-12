@@ -8,6 +8,8 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Done
 
+- [x] Credential warning on `--import` / `--update`: `warn_secrets` flags token, key, private-key, JWT, URL-password and assignment patterns in the bullets (and code comments) that would be copied onto the board, masked, advisory only; 28 tests including mutation-checked ones, and no false positives across the real repos under `~/code`.
+- [x] Repo hygiene: `build/` and `dist/` added to your local `.gitignore` (it ignores itself, so it is not in the repo), and a `.pre-commit-config.yaml` running gitleaks v8.30.1 (tested: blocks a staged fake token, passes a clean change; a full gitleaks scan of 51 commits and the tree found no leaks).
 - [x] Fixed the example workflows' install step for a private kopi repo (token in the pip URL), found while preparing a real run and checked in a credential-free environment.
 - [x] Faster creates: evaluated on a scratch board and not built. 2 to 3 parallel create requests save at most about 40% of the create time, but fail and still create part of their items (246 to 288 of 300 landed), so a retry duplicates and no retry loses items; sequential never failed. Numbers and the open questions are in `RESEARCH.md`.
 - [x] Post the report: `--report --to FILE` and `--report --post ISSUE` (one comment, edited in place), with unit and smoke tests; verified live on a temporary issue (since deleted).

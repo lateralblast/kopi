@@ -4,9 +4,11 @@ Status: `[ ]` open, `[~]` in progress, `[x]` done.
 
 ## Open
 
+- [ ] Run `docs/kopi-check.yml` and `docs/kopi-update.yml` on a real GitHub Actions runner (needs the workflow in a repo, a `KOPI_TOKEN` secret, and a run): only simulated so far. Declined for now; the install step was checked in a credential-free environment.
 
 ## Done
 
+- [x] Fixed the example workflows' install step for a private kopi repo (token in the pip URL), found while preparing a real run and checked in a credential-free environment.
 - [x] Faster creates: evaluated on a scratch board and not built. 2 to 3 parallel create requests save at most about 40% of the create time, but fail and still create part of their items (246 to 288 of 300 landed), so a retry duplicates and no retry loses items; sequential never failed. Numbers and the open questions are in `RESEARCH.md`.
 - [x] Post the report: `--report --to FILE` and `--report --post ISSUE` (one comment, edited in place), with unit and smoke tests; verified live on a temporary issue (since deleted).
 - [x] Auto-update on push: `docs/kopi-update.yml` (board-only `kopi --update` on pushes touching the files, serialised by a concurrency group), README section, tests; checked from a simulated runner, not on a real Actions runner.

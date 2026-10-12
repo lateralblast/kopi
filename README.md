@@ -2,7 +2,7 @@
 
 # kopi
 
-Version: 1.2.7
+Version: 1.2.8
 
 **KOPI: Keep Our Projects In-sync.** Create and manage GitHub Projects (v2) from the command line, and keep them in step with your repo's `CHANGELOG.md`, `TODO.md`, issues and PRs. Wraps the `gh` CLI, so it needs no dependencies beyond Python 3.9+ and an authenticated `gh` with the `project` scope (`gh auth refresh -s project`).
 
@@ -284,7 +284,7 @@ Add `--check` to use it as a gate in CI or a pre-commit hook: the exit status is
 
 `kopi --diff --check` only reads, costs a few API points (the board is read with one slim query) and exits 0 when the board and files agree and 2 when they do not, so it can fail a pull request or a push.
 
-- **GitHub Actions.** [`docs/kopi-check.yml`](docs/kopi-check.yml) is a ready workflow: it installs kopi with pip, and runs `kopi --diff --check` on pull requests that touch `CHANGELOG.md` or `TODO.md`, and weekly. It needs a repository secret holding a token that can read your Projects (a classic personal access token with `project` and `repo`, or a fine-grained one with Projects read), passed as `GH_TOKEN`; the built-in `GITHUB_TOKEN` cannot read user or organisation Projects. `gh` takes the token from the environment, so no `gh auth login` step is needed.
+- **GitHub Actions.** [`docs/kopi-check.yml`](docs/kopi-check.yml) is a ready workflow: it installs kopi with pip (with the token in the install URL, so it works while the kopi repo is private; drop it if kopi is public), and runs `kopi --diff --check` on pull requests that touch `CHANGELOG.md` or `TODO.md`, and weekly. It needs a repository secret holding a token that can read your Projects (a classic personal access token with `project` and `repo`, or a fine-grained one with Projects read), passed as `GH_TOKEN`; the built-in `GITHUB_TOKEN` cannot read user or organisation Projects. `gh` takes the token from the environment, so no `gh auth login` step is needed.
 - **pre-commit.** Run it before a commit that touches the files, with a local hook in `.pre-commit-config.yaml`:
 
   ```yaml

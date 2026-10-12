@@ -7,6 +7,11 @@ Versions are `MAJOR.MINOR.PATCH` with no digit above 9, so `0.0.9` is followed b
 
 ## [Unreleased]
 
+## [1.2.8] - 2026-10-12
+
+### Fixed
+- Both example workflows (`docs/kopi-check.yml`, `docs/kopi-update.yml`) installed kopi with a plain `pip install git+https://github.com/lateralblast/kopi.git`, which fails on a runner while the kopi repo is private (there are no credentials for it). They now put the `KOPI_TOKEN` secret in the install URL (`x-access-token:${GH_TOKEN}@github.com/...`; GitHub masks it in the log). Checked in a credential-free environment (new venv, empty `HOME`, no system git config, no prompt): the plain URL fails to clone, the token form installs kopi. The workflows themselves have still not run on a real Actions runner.
+
 ## [1.2.7] - 2026-10-12
 
 ### Changed

@@ -22,7 +22,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install git+https://github.com/lateralblast/kopi.git
+      - name: Install kopi
+        env:
+          GH_TOKEN: ${{ secrets.KOPI_TOKEN }}
+        # The token goes in the URL so this also works while the kopi repo is private (a runner has no other
+        # credentials for it); GitHub masks secrets in the log. If kopi is public, the plain
+        # https://github.com/lateralblast/kopi.git URL works without it.
+        run: pip install "git+https://x-access-token:${GH_TOKEN}@github.com/lateralblast/kopi.git"
       - name: Board and files agree
         env:
           GH_TOKEN: ${{ secrets.KOPI_TOKEN }}    # gh reads this; no `gh auth login` needed
